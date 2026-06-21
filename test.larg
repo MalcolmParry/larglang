@@ -1,0 +1,4 @@
+fn main() {
+	x = 500;
+	return x + 12;
+}
