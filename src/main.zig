@@ -1,5 +1,6 @@
 const std = @import("std");
 const Lexer = @import("Lexer.zig");
+const parser = @import("parser.zig");
 
 pub fn main(init: std.process.Init) !void {
     const alloc = init.gpa;
@@ -22,8 +23,17 @@ pub fn main(init: std.process.Init) !void {
     };
 
     while (true) {
-        const token = lexer.getToken();
+        const token = lexer.popToken();
         std.log.info("{f}", .{token.format(&lexer)});
         if (token == .eof) break;
     }
+
+    lexer.head = 0;
+    const ast = try parser.parse(.{
+        .gpa = init.gpa,
+        .arena = init.arena.allocator(),
+        .lexer = &lexer,
+    }) orelse return error.ParseFailed;
+
+    std.log.info("\n{f}", .{ast.format(&lexer)});
 }

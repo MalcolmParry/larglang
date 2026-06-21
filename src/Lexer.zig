@@ -7,6 +7,10 @@ head: usize,
 pub const Slice = struct {
     start: u32,
     len: u32,
+
+    pub fn get(slice: Slice, lexer: *const Lexer) []const u8 {
+        return lexer.src[slice.start..][0..slice.len];
+    }
 };
 
 pub const Token = union(enum) {
@@ -44,20 +48,20 @@ pub const Token = union(enum) {
 
     pub fn format(token: Token, lexer: *const Lexer) Formatter {
         return .{
-            .src = lexer.src,
+            .lexer = lexer,
             .token = token,
         };
     }
 
     pub const Formatter = struct {
-        src: []const u8,
+        lexer: *const Lexer,
         token: Token,
 
         pub fn format(this: @This(), writer: *std.Io.Writer) std.Io.Writer.Error!void {
             try writer.print("{s}", .{@tagName(this.token)});
 
             switch (this.token) {
-                .ident => |slice| try writer.print(" {s}", .{this.src[slice.start..][0..slice.len]}),
+                .ident => |slice| try writer.print(" {s}", .{slice.get(this.lexer)}),
                 .int => |val| try writer.print(" {}", .{val}),
                 else => {},
             }
@@ -65,7 +69,12 @@ pub const Token = union(enum) {
     };
 };
 
-pub fn getToken(lexer: *Lexer) Token {
+pub fn peekToken(lexer: Lexer) Token {
+    var copy = lexer;
+    return copy.popToken();
+}
+
+pub fn popToken(lexer: *Lexer) Token {
     while (true) {
         const c = lexer.peekChar() orelse return .eof;
         if (std.ascii.isWhitespace(c)) {
