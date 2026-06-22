@@ -3,6 +3,8 @@ const Lexer = @import("Lexer.zig");
 const Token = Lexer.Token;
 const Slice = Lexer.Slice;
 
+pub const Error = error{ OutOfMemory, ParseFailed };
+
 pub const FileScope = struct {
     funcs: []const Func,
 
@@ -214,18 +216,21 @@ pub fn parseExpr(state: State) !*Expression {
     return left;
 }
 
-pub fn parseTerm(state: State) !*Expression {
-    const val = try parseTermVal(state);
-    const ptr = try state.arena.create(Expression);
-    ptr.* = val;
-    return ptr;
-}
-
-pub fn parseTermVal(state: State) !Expression {
+pub fn parseTerm(state: State) Error!*Expression {
     const token = state.lexer.popToken();
-    return switch (token) {
+
+    const val: Expression = switch (token) {
         .int => |val| .{ .int_lit = val },
         .ident => |ident| .{ .ident = ident },
-        else => error.ParseFailed,
+        .lparen => {
+            const expr = try parseExpr(state);
+            _ = try popExpectToken(state, .rparen);
+            return expr;
+        },
+        else => return error.ParseFailed,
     };
+
+    const expr = try state.arena.create(Expression);
+    expr.* = val;
+    return expr;
 }
