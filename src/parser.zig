@@ -29,17 +29,17 @@ pub const Func = struct {
     statements: []const Statement,
 
     pub fn format(func: Func, lexer: *const Lexer) Formatter {
-        return .{ .func_decl = func, .lexer = lexer };
+        return .{ .func = func, .lexer = lexer };
     }
 
     pub const Formatter = struct {
-        func_decl: Func,
+        func: Func,
         lexer: *const Lexer,
 
         pub fn format(this: @This(), writer: *std.Io.Writer) std.Io.Writer.Error!void {
-            try writer.print("func '{s}':\n", .{this.func_decl.name.get(this.lexer)});
+            try writer.print("func '{s}':\n", .{this.func.name.get(this.lexer)});
 
-            for (this.func_decl.statements) |statement| {
+            for (this.func.statements) |statement| {
                 try writer.print("\t{f}", .{statement.format(this.lexer)});
             }
         }
@@ -198,7 +198,7 @@ pub fn parseStatement(state: State) !Statement {
         .ident => {
             const ident = state.lexer.popToken();
             _ = try popExpectToken(state, .assign);
-            const expr = try parseExpr(state);
+            const expr = try parseExpr(state, 0);
             _ = try popExpectToken(state, .semicolon);
 
             return .{ .assign = .{
@@ -208,7 +208,7 @@ pub fn parseStatement(state: State) !Statement {
         },
         .ret => {
             _ = state.lexer.popToken();
-            const expr = try parseExpr(state);
+            const expr = try parseExpr(state, 0);
             _ = try popExpectToken(state, .semicolon);
 
             return .{ .ret = expr };
@@ -217,17 +217,26 @@ pub fn parseStatement(state: State) !Statement {
     }
 }
 
-pub fn parseExpr(state: State) !*Expression {
-    var left: *Expression = try parseTerm(state);
+pub fn parseExpr(state: State, level: u8) !*Expression {
+    if (level > 1) return parseTerm(state);
+
+    var left: *Expression = try parseExpr(state, level + 1);
     while (true) {
         const op = state.lexer.peekToken();
-        switch (op) {
-            .add, .sub, .mul, .div => {},
-            else => break,
+        switch (level) {
+            0 => switch (op) {
+                .add, .sub => {},
+                else => break,
+            },
+            1 => switch (op) {
+                .mul, .div => {},
+                else => break,
+            },
+            else => unreachable,
         }
 
         _ = state.lexer.popToken();
-        const right = try parseTerm(state);
+        const right = try parseExpr(state, level + 1);
         const new = try state.arena.create(Expression);
 
         new.* = .{ .bin = .{
@@ -255,7 +264,7 @@ pub fn parseTerm(state: State) Error!*Expression {
         .int => |val| .{ .int_lit = val },
         .ident => |ident| .{ .ident = ident },
         .lparen => {
-            const expr = try parseExpr(state);
+            const expr = try parseExpr(state, 0);
             _ = try popExpectToken(state, .rparen);
             return expr;
         },
