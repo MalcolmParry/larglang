@@ -1,0 +1,60 @@
+// function declaration
+// required as function is defined in assembly which is opaque to the compiler
+fn print(msg, len);
+
+// in code, `value` gets the address of the first byte of this
+// same as
+// value:
+// dq 1
+// dw 3
+data value {
+	emit 8 = 1;
+	emit 2 = 3;
+}
+
+// same as other_value: resb 100
+reserve other_value 100;
+
+// global constant
+// cannot be referenced
+global_variable = 4;
+
+// both msg and len are basically size_t
+// msg is the address of the first char in the string
+// it is not null terminated
+strdef msg, len = "hello world";
+
+fn main {
+	// stack allocated data
+	data fourth_value {
+		emit 8 = 4;
+	}
+
+	print(msg, len);
+	// dereferences the 3 defined in value
+	return [2](value + 8);
+}
+
+asm ".text" {
+print:
+	mov rdx, rsi
+	mov rsi, rdi
+	mov rax, 1
+	mov rdi, 1
+	syscall
+	ret
+global _start
+_start:
+	call main
+	mov rdi, rax
+	mov rax, 60
+	syscall
+}
+
+// declares a label exists and can be referenced
+data third_thing;
+
+asm ".bss" {
+third_thing:
+	resb 64
+}

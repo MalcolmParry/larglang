@@ -4,7 +4,7 @@ const Token = Lexer.Token;
 const Slice = Lexer.Slice;
 
 pub const FileScope = struct {
-    func_decls: []const FuncDecl,
+    funcs: []const Func,
 
     pub fn format(file_scope: FileScope, lexer: *const Lexer) Formatter {
         return .{ .scope = file_scope, .lexer = lexer };
@@ -15,23 +15,23 @@ pub const FileScope = struct {
         lexer: *const Lexer,
 
         pub fn format(this: @This(), writer: *std.Io.Writer) std.Io.Writer.Error!void {
-            for (this.scope.func_decls) |func| {
+            for (this.scope.funcs) |func| {
                 try writer.print("{f}\n", .{func.format(this.lexer)});
             }
         }
     };
 };
 
-pub const FuncDecl = struct {
+pub const Func = struct {
     name: Slice,
     statements: []const Statement,
 
-    pub fn format(func_decl: FuncDecl, lexer: *const Lexer) Formatter {
-        return .{ .func_decl = func_decl, .lexer = lexer };
+    pub fn format(func: Func, lexer: *const Lexer) Formatter {
+        return .{ .func_decl = func, .lexer = lexer };
     }
 
     pub const Formatter = struct {
-        func_decl: FuncDecl,
+        func_decl: Func,
         lexer: *const Lexer,
 
         pub fn format(this: @This(), writer: *std.Io.Writer) std.Io.Writer.Error!void {
@@ -112,37 +112,43 @@ pub const State = struct {
     lexer: *Lexer,
 };
 
-pub fn parse(state: State) !?FileScope {
-    var func_decls: std.ArrayList(FuncDecl) = .empty;
-    defer func_decls.deinit(state.gpa);
+fn expectToken(token: Token, expected: Token.Kind) !void {
+    if (token != expected) return error.ParseFailed;
+}
+
+fn popExpectToken(state: State, expected: Token.Kind) !Token {
+    const token = state.lexer.popToken();
+    try expectToken(token, expected);
+    return token;
+}
+
+pub fn parse(state: State) !FileScope {
+    var funcs: std.ArrayList(Func) = .empty;
+    defer funcs.deinit(state.gpa);
 
     while (true) {
         const token = state.lexer.peekToken();
-        if (token.isError()) return null;
 
         switch (token) {
             .func => {
-                const func_decl = try parseFuncDecl(state) orelse return null;
-                try func_decls.append(state.gpa, func_decl);
+                const func = try parseFunc(state);
+                try funcs.append(state.gpa, func);
             },
             .eof => break,
-            else => return null,
+            else => return error.ParseFailed,
         }
     }
 
     return .{
-        .func_decls = try state.arena.dupe(FuncDecl, func_decls.items),
+        .funcs = try state.arena.dupe(Func, funcs.items),
     };
 }
 
-pub fn parseFuncDecl(state: State) !?FuncDecl {
-    if (state.lexer.popToken() != .func) return null;
+pub fn parseFunc(state: State) !Func {
+    _ = try popExpectToken(state, .func);
     const name_token = state.lexer.popToken();
-    if (name_token != .ident) return null;
-
-    if (state.lexer.popToken() != .lparen) return null;
-    if (state.lexer.popToken() != .rparen) return null;
-    if (state.lexer.popToken() != .lbrace) return null;
+    try expectToken(name_token, .ident);
+    _ = try popExpectToken(state, .lbrace);
 
     var statements: std.ArrayList(Statement) = .empty;
     defer statements.deinit(state.gpa);
@@ -151,7 +157,7 @@ pub fn parseFuncDecl(state: State) !?FuncDecl {
         const token = state.lexer.peekToken();
         if (token == .rbrace) break;
 
-        const statement = try parseStatement(state) orelse return null;
+        const statement = try parseStatement(state);
         try statements.append(state.gpa, statement);
     }
 
@@ -163,15 +169,15 @@ pub fn parseFuncDecl(state: State) !?FuncDecl {
     };
 }
 
-pub fn parseStatement(state: State) !?Statement {
+pub fn parseStatement(state: State) !Statement {
     const token = state.lexer.peekToken();
 
     switch (token) {
         .ident => {
             const ident = state.lexer.popToken();
-            if (state.lexer.popToken() != .assign) return null;
-            const expr = try parseExpr(state) orelse return null;
-            if (state.lexer.popToken() != .semicolon) return null;
+            _ = try popExpectToken(state, .assign);
+            const expr = try parseExpr(state);
+            _ = try popExpectToken(state, .semicolon);
 
             return .{ .assign = .{
                 .ident = ident.ident,
@@ -180,23 +186,23 @@ pub fn parseStatement(state: State) !?Statement {
         },
         .ret => {
             _ = state.lexer.popToken();
-            const expr = try parseExpr(state) orelse return null;
-            if (state.lexer.popToken() != .semicolon) return null;
+            const expr = try parseExpr(state);
+            _ = try popExpectToken(state, .semicolon);
 
             return .{ .ret = expr };
         },
-        else => return null,
+        else => return error.ParseFailed,
     }
 }
 
-pub fn parseExpr(state: State) !?*Expression {
-    var left: *Expression = try parseTerm(state) orelse return null;
+pub fn parseExpr(state: State) !*Expression {
+    var left: *Expression = try parseTerm(state);
     while (true) {
         const op = state.lexer.peekToken();
         if (op != .plus) break;
 
         _ = state.lexer.popToken();
-        const right = try parseExpr(state) orelse return null;
+        const right = try parseTerm(state);
         const new = try state.arena.create(Expression);
         new.* = .{ .add = .{
             .left = left,
@@ -208,18 +214,18 @@ pub fn parseExpr(state: State) !?*Expression {
     return left;
 }
 
-pub fn parseTerm(state: State) !?*Expression {
-    const val = try parseTermVal(state) orelse return null;
+pub fn parseTerm(state: State) !*Expression {
+    const val = try parseTermVal(state);
     const ptr = try state.arena.create(Expression);
     ptr.* = val;
     return ptr;
 }
 
-pub fn parseTermVal(state: State) !?Expression {
+pub fn parseTermVal(state: State) !Expression {
     const token = state.lexer.popToken();
     return switch (token) {
         .int => |val| .{ .int_lit = val },
         .ident => |ident| .{ .ident = ident },
-        else => null,
+        else => error.ParseFailed,
     };
 }

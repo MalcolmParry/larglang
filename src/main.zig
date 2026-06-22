@@ -33,7 +33,7 @@ pub fn main(init: std.process.Init) !void {
         .gpa = init.gpa,
         .arena = init.arena.allocator(),
         .lexer = &lexer,
-    }) orelse return error.ParseFailed;
+    });
 
     std.log.info("\n{f}", .{ast.format(&lexer)});
 }

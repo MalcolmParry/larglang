@@ -14,6 +14,8 @@ pub const Slice = struct {
 };
 
 pub const Token = union(enum) {
+    pub const Kind = std.meta.Tag(Token);
+
     eof,
     ident: Slice,
     int: u64,
@@ -30,7 +32,6 @@ pub const Token = union(enum) {
 
     // keywords
     func,
-    const_,
     ret,
 
     // errors
@@ -112,7 +113,6 @@ fn handleIdent(lexer: *Lexer) Token {
 
     const ident = lexer.src[start..lexer.head];
     if (std.mem.eql(u8, ident, "fn")) return .func;
-    if (std.mem.eql(u8, ident, "const")) return .const_;
     if (std.mem.eql(u8, ident, "return")) return .ret;
 
     return .{ .ident = .{
