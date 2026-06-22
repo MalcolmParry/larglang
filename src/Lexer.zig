@@ -28,7 +28,12 @@ pub const Token = union(enum) {
     colon,
     assign,
     semicolon,
-    plus,
+
+    // bin ops
+    add,
+    sub,
+    mul,
+    div,
 
     // keywords
     func,
@@ -94,7 +99,10 @@ pub fn popToken(lexer: *Lexer) Token {
             ':' => .colon,
             '=' => .assign,
             ';' => .semicolon,
-            '+' => .plus,
+            '+' => .add,
+            '-' => .sub,
+            '*' => .mul,
+            '/' => .div,
             else => .{ .err_invalid_char = @intCast(lexer.head) },
         };
 

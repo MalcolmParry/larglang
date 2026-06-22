@@ -80,9 +80,26 @@ pub const Statement = union(enum) {
 pub const Expression = union(enum) {
     int_lit: u64,
     ident: Slice,
-    add: BinOp,
+    bin: BinOp,
 
     pub const BinOp = struct {
+        pub const Op = enum {
+            add,
+            sub,
+            mul,
+            div,
+
+            pub fn getStr(op: Op) []const u8 {
+                return switch (op) {
+                    .add => "+",
+                    .sub => "-",
+                    .mul => "*",
+                    .div => "/",
+                };
+            }
+        };
+
+        op: Op,
         left: *const Expression,
         right: *const Expression,
     };
@@ -99,10 +116,13 @@ pub const Expression = union(enum) {
             switch (this.expr) {
                 .int_lit => |val| try writer.print("{}", .{val}),
                 .ident => |ident| try writer.print("{s}", .{ident.get(this.lexer)}),
-                .add => |bin| try writer.print("({f} + {f})", .{
-                    bin.left.format(this.lexer),
-                    bin.right.format(this.lexer),
-                }),
+                .bin => |bin| {
+                    try writer.print("({f} {s} {f})", .{
+                        bin.left.format(this.lexer),
+                        bin.op.getStr(),
+                        bin.right.format(this.lexer),
+                    });
+                },
             }
         }
     };
@@ -201,15 +221,27 @@ pub fn parseExpr(state: State) !*Expression {
     var left: *Expression = try parseTerm(state);
     while (true) {
         const op = state.lexer.peekToken();
-        if (op != .plus) break;
+        switch (op) {
+            .add, .sub, .mul, .div => {},
+            else => break,
+        }
 
         _ = state.lexer.popToken();
         const right = try parseTerm(state);
         const new = try state.arena.create(Expression);
-        new.* = .{ .add = .{
+
+        new.* = .{ .bin = .{
+            .op = switch (op) {
+                .add => .add,
+                .sub => .sub,
+                .mul => .mul,
+                .div => .div,
+                else => unreachable,
+            },
             .left = left,
             .right = right,
         } };
+
         left = new;
     }
 

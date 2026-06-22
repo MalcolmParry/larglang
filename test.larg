@@ -1,4 +1,4 @@
 fn main {
 	x = 500;
-	return x + (12 + 3) + 6;
+	return x + (12 - 3) * 6 / 3;
 }
