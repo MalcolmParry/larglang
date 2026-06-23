@@ -1,6 +1,7 @@
 const std = @import("std");
 const Lexer = @import("Lexer.zig");
 const parser = @import("parser.zig");
+const ir_gen = @import("ir.zig");
 
 pub fn main(init: std.process.Init) !void {
     const alloc = init.gpa;
@@ -36,4 +37,14 @@ pub fn main(init: std.process.Init) !void {
     });
 
     std.log.info("\n{f}", .{ast.format(&lexer)});
+
+    var ir = try ir_gen.compileAst(.{ .gpa = alloc, .lexer = &lexer }, &ast);
+    defer ir.deinit(alloc);
+
+    for (ir.funcs.items) |func| {
+        std.log.info("\nfn {s}\n{f}", .{
+            func.name.get(&lexer),
+            func.block,
+        });
+    }
 }
