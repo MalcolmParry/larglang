@@ -30,6 +30,7 @@ pub const Token = union(enum) {
     semicolon,
 
     // bin ops
+    equal,
     add,
     sub,
     mul,
@@ -38,6 +39,7 @@ pub const Token = union(enum) {
     // keywords
     func,
     ret,
+    if_,
 
     // errors
     err_invalid_char: u32,
@@ -82,7 +84,7 @@ pub fn peekToken(lexer: Lexer) Token {
 
 pub fn popToken(lexer: *Lexer) Token {
     while (true) {
-        const c = lexer.peekChar() orelse return .eof;
+        const c = lexer.peekChar(0) orelse return .eof;
         if (std.ascii.isWhitespace(c)) {
             lexer.head += 1;
             continue;
@@ -97,7 +99,10 @@ pub fn popToken(lexer: *Lexer) Token {
             '{' => .lbrace,
             '}' => .rbrace,
             ':' => .colon,
-            '=' => .assign,
+            '=' => if (lexer.peekChar(1) == '=') {
+                lexer.head += 2;
+                return .equal;
+            } else .assign,
             ';' => .semicolon,
             '+' => .add,
             '-' => .sub,
@@ -114,7 +119,7 @@ pub fn popToken(lexer: *Lexer) Token {
 fn handleIdent(lexer: *Lexer) Token {
     const start = lexer.head;
 
-    while (lexer.peekChar()) |c| {
+    while (lexer.peekChar(0)) |c| {
         if (!(std.ascii.isAlphanumeric(c) or c == '_')) break;
         lexer.head += 1;
     }
@@ -122,6 +127,7 @@ fn handleIdent(lexer: *Lexer) Token {
     const ident = lexer.src[start..lexer.head];
     if (std.mem.eql(u8, ident, "fn")) return .func;
     if (std.mem.eql(u8, ident, "return")) return .ret;
+    if (std.mem.eql(u8, ident, "if")) return .if_;
 
     return .{ .ident = .{
         .start = @intCast(start),
@@ -132,7 +138,7 @@ fn handleIdent(lexer: *Lexer) Token {
 fn handleInt(lexer: *Lexer) Token {
     const start = lexer.head;
 
-    while (lexer.peekChar()) |c| {
+    while (lexer.peekChar(0)) |c| {
         if (!std.ascii.isDigit(c)) break;
         lexer.head += 1;
     }
@@ -149,7 +155,8 @@ fn handleInt(lexer: *Lexer) Token {
     return .{ .int = val };
 }
 
-fn peekChar(lexer: *Lexer) ?u8 {
-    if (lexer.head >= lexer.src.len) return null;
-    return lexer.src[lexer.head];
+fn peekChar(lexer: *Lexer, offset: isize) ?u8 {
+    const pos: isize = @as(isize, @intCast(lexer.head)) + offset;
+    if (pos < 0 or pos >= lexer.src.len) return null;
+    return lexer.src[@as(usize, @intCast(pos))];
 }

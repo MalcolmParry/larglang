@@ -26,7 +26,7 @@ pub const FileScope = struct {
 
 pub const Func = struct {
     name: Slice,
-    statements: []const Statement,
+    block: CodeBlock,
 
     pub fn format(func: Func, lexer: *const Lexer) Formatter {
         return .{ .func = func, .lexer = lexer };
@@ -37,10 +37,35 @@ pub const Func = struct {
         lexer: *const Lexer,
 
         pub fn format(this: @This(), writer: *std.Io.Writer) std.Io.Writer.Error!void {
-            try writer.print("func '{s}':\n", .{this.func.name.get(this.lexer)});
+            try writer.print("func '{s}':\n{f}", .{
+                this.func.name.get(this.lexer),
+                CodeBlock.Formatter{
+                    .block = this.func.block,
+                    .indent = 1,
+                    .lexer = this.lexer,
+                },
+            });
+        }
+    };
+};
 
-            for (this.func.statements) |statement| {
-                try writer.print("\t{f}", .{statement.format(this.lexer)});
+pub const CodeBlock = struct {
+    statements: []const Statement,
+
+    pub const Formatter = struct {
+        block: CodeBlock,
+        indent: usize,
+        lexer: *const Lexer,
+
+        pub fn format(this: @This(), writer: *std.Io.Writer) std.Io.Writer.Error!void {
+            for (this.block.statements) |statement| {
+                for (0..this.indent) |_| try writer.print("    ", .{});
+
+                try writer.print("{f}", .{Statement.Formatter{
+                    .statement = statement,
+                    .indent = this.indent,
+                    .lexer = this.lexer,
+                }});
             }
         }
     };
@@ -49,18 +74,21 @@ pub const Func = struct {
 pub const Statement = union(enum) {
     assign: Assign,
     ret: *const Expression,
+    if_: If,
 
     pub const Assign = struct {
         ident: Slice,
         expr: *const Expression,
     };
 
-    pub fn format(statement: Statement, lexer: *const Lexer) Formatter {
-        return .{ .statement = statement, .lexer = lexer };
-    }
+    pub const If = struct {
+        condition: *const Expression,
+        block: CodeBlock,
+    };
 
     pub const Formatter = struct {
         statement: Statement,
+        indent: usize,
         lexer: *const Lexer,
 
         pub fn format(this: @This(), writer: *std.Io.Writer) std.Io.Writer.Error!void {
@@ -71,6 +99,14 @@ pub const Statement = union(enum) {
                 }),
                 .ret => |expr| try writer.print("ret {f}\n", .{
                     expr.format(this.lexer),
+                }),
+                .if_ => |if_| try writer.print("if {f}:\n{f}", .{
+                    if_.condition.format(this.lexer),
+                    CodeBlock.Formatter{
+                        .block = if_.block,
+                        .indent = this.indent + 1,
+                        .lexer = this.lexer,
+                    },
                 }),
             }
         }
@@ -88,6 +124,7 @@ pub const Expression = union(enum) {
             sub,
             mul,
             div,
+            equal,
 
             pub fn getStr(op: Op) []const u8 {
                 return switch (op) {
@@ -95,6 +132,7 @@ pub const Expression = union(enum) {
                     .sub => "-",
                     .mul => "*",
                     .div => "/",
+                    .equal => "==",
                 };
             }
         };
@@ -170,14 +208,22 @@ pub fn parseFunc(state: State) !Func {
     _ = try popExpectToken(state, .func);
     const name_token = state.lexer.popToken();
     try expectToken(name_token, .ident);
+    const block = try parseCodeBlock(state);
+
+    return .{
+        .name = name_token.ident,
+        .block = block,
+    };
+}
+
+pub fn parseCodeBlock(state: State) !CodeBlock {
     _ = try popExpectToken(state, .lbrace);
 
     var statements: std.ArrayList(Statement) = .empty;
     defer statements.deinit(state.gpa);
 
     while (true) {
-        const token = state.lexer.peekToken();
-        if (token == .rbrace) break;
+        if (state.lexer.peekToken() == .rbrace) break;
 
         const statement = try parseStatement(state);
         try statements.append(state.gpa, statement);
@@ -186,12 +232,11 @@ pub fn parseFunc(state: State) !Func {
     _ = state.lexer.popToken();
 
     return .{
-        .name = name_token.ident,
         .statements = try state.arena.dupe(Statement, statements.items),
     };
 }
 
-pub fn parseStatement(state: State) !Statement {
+pub fn parseStatement(state: State) Error!Statement {
     const token = state.lexer.peekToken();
 
     switch (token) {
@@ -213,22 +258,38 @@ pub fn parseStatement(state: State) !Statement {
 
             return .{ .ret = expr };
         },
+        .if_ => {
+            _ = state.lexer.popToken();
+            _ = try popExpectToken(state, .lparen);
+            const expr = try parseExpr(state, 0);
+            _ = try popExpectToken(state, .rparen);
+            const block = try parseCodeBlock(state);
+
+            return .{ .if_ = .{
+                .condition = expr,
+                .block = block,
+            } };
+        },
         else => return error.ParseFailed,
     }
 }
 
 pub fn parseExpr(state: State, level: u8) !*Expression {
-    if (level > 1) return parseTerm(state);
+    if (level > 2) return parseTerm(state);
 
     var left: *Expression = try parseExpr(state, level + 1);
     while (true) {
         const op = state.lexer.peekToken();
         switch (level) {
             0 => switch (op) {
-                .add, .sub => {},
+                .equal => {},
                 else => break,
             },
             1 => switch (op) {
+                .add, .sub => {},
+                else => break,
+            },
+            2 => switch (op) {
                 .mul, .div => {},
                 else => break,
             },
@@ -245,6 +306,7 @@ pub fn parseExpr(state: State, level: u8) !*Expression {
                 .sub => .sub,
                 .mul => .mul,
                 .div => .div,
+                .equal => .equal,
                 else => unreachable,
             },
             .left = left,
