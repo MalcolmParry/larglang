@@ -3,7 +3,7 @@ const Lexer = @import("Lexer.zig");
 const Token = Lexer.Token;
 const Slice = Lexer.Slice;
 const parser = @import("parser.zig");
-const IdentMap = std.StringHashMapUnmanaged(ValueRef);
+const IdentMap = std.array_hash_map.String(ValueRef);
 
 pub const FileScope = struct {
     funcs: std.ArrayList(Func),
@@ -29,9 +29,16 @@ pub const Func = struct {
 
     pub fn format(this: @This(), writer: *std.Io.Writer) std.Io.Writer.Error!void {
         for (0.., this.blocks.items) |block_id, block| {
-            try writer.print("@{}({})\n{f}\n", .{
-                block_id,
-                block.arg_count,
+            try writer.print("@{}(", .{block_id});
+
+            for (0..block.arg_count) |arg_id| {
+                try writer.print("%{}", .{arg_id});
+
+                if (arg_id != block.arg_count - 1)
+                    try writer.print(", ", .{});
+            }
+
+            try writer.print("):\n{f}\n", .{
                 block,
             });
         }
@@ -61,6 +68,7 @@ pub const Block = struct {
         }
 
         switch (this.terminator) {
+            .none => try writer.print("no terminator\n", .{}),
             .ret => |val| try writer.print("ret {f}\n", .{val}),
             .jmp => |jmp| try writer.print("jmp {f}\n", .{jmp}),
             .branch => |branch| try writer.print("branch {f} ? {f} : {f}\n", .{
@@ -73,12 +81,15 @@ pub const Block = struct {
 };
 
 pub const Terminator = union(enum) {
+    /// only for ir gen, final ir should never have this
+    none,
     ret: ValueRef,
     jmp: Jmp,
     branch: Branch,
 
     pub fn deinit(term: *Terminator, alloc: std.mem.Allocator) void {
         switch (term.*) {
+            .none => {},
             .ret => {},
             .jmp => |*jmp| jmp.args.deinit(alloc),
             .branch => |*branch| {
@@ -184,105 +195,110 @@ pub fn compileAst(state: State, ast: *const parser.FileScope) !FileScope {
             .next_value_ref = @enumFromInt(0),
             .arg_count = 0,
             .instructions = .empty,
-            .terminator = .{
-                .ret = .none,
-            },
+            .terminator = .none,
         });
 
-        func.entry_block_id = try compileCodeBlock(state, &func, &.{}, ast_func.block, 0);
+        const thing = try compileCodeBlock(state, &func, &.empty, ast_func.block, 0);
+        switch (thing) {
+            .returned => {},
+            .continued => |continued| gpa.free(continued.args),
+        }
+
         try file_scope.funcs.append(gpa, func);
     }
 
     return file_scope;
 }
 
-pub fn compileCodeBlock(state: State, func: *Func, vars: []const []const u8, ast_block: parser.CodeBlock, ret_block_id: u32) !u32 {
+pub const CompileCodeBlockResult = union(enum) {
+    returned,
+    continued: Continued,
+
+    pub const Continued = struct {
+        current_block_id: u32,
+        args: []ValueRef,
+    };
+};
+
+/// returns current block id
+pub fn compileCodeBlock(state: State, func: *Func, ident_map: *const IdentMap, ast_block: parser.CodeBlock, first_block_id: u32) !CompileCodeBlockResult {
     const gpa = state.gpa;
-    var ident_map: IdentMap = .empty;
-    defer ident_map.deinit(gpa);
+    var new_ident_map = try ident_map.clone(gpa);
+    defer new_ident_map.deinit(gpa);
 
-    const first_block_id: u32 = @intCast(func.blocks.items.len);
-    try func.blocks.append(gpa, .{
-        .arg_count = @intCast(vars.len),
-        .next_value_ref = @enumFromInt(@as(u32, @intCast(vars.len))),
-        .instructions = .empty,
-        .terminator = undefined,
-    });
-
-    for (0.., vars) |arg_id, ident| {
-        try ident_map.put(gpa, ident, @enumFromInt(arg_id));
-    }
-
-    var block_id: u32 = first_block_id;
+    var block_id = first_block_id;
     for (ast_block.statements) |statement| {
         switch (statement) {
             .assign => |assign| {
-                const val = try compileExpr(state, &func.blocks.items[block_id], &ident_map, assign.expr);
-                try ident_map.put(gpa, assign.ident.get(state.lexer), val);
+                const val = try compileExpr(state, &func.blocks.items[block_id], &new_ident_map, assign.expr);
+                try new_ident_map.put(gpa, assign.ident.get(state.lexer), val);
             },
             .ret => |expr| {
-                const val = try compileExpr(state, &func.blocks.items[block_id], &ident_map, expr);
+                const val = try compileExpr(state, &func.blocks.items[block_id], &new_ident_map, expr);
                 func.blocks.items[block_id].terminator = .{ .ret = val };
-                return block_id;
+                return .returned;
             },
             .if_ => |if_| {
-                const condition = try compileExpr(state, &func.blocks.items[block_id], &ident_map, if_.condition);
-                const new_vars = try gpa.alloc([]const u8, ident_map.count());
-                defer gpa.free(new_vars);
+                const condition = try compileExpr(state, &func.blocks.items[block_id], &new_ident_map, if_.condition);
 
-                var ident_iter = ident_map.iterator();
-                var i: usize = 0;
-                while (ident_iter.next()) |ident| : (i += 1) {
-                    new_vars[i] = ident.key_ptr.*;
-                }
-
-                const new_block_id: u32 = @intCast(func.blocks.items.len);
+                const true_block_id: u32 = @intCast(func.blocks.items.len);
                 try func.blocks.append(gpa, .{
-                    .arg_count = @intCast(new_vars.len),
-                    .next_value_ref = @enumFromInt(@as(u32, @intCast(new_vars.len))),
+                    .arg_count = @intCast(new_ident_map.count()),
+                    .next_value_ref = @enumFromInt(@as(u32, @intCast(new_ident_map.count()))),
                     .instructions = .empty,
-                    .terminator = undefined,
+                    .terminator = .none,
                 });
 
-                const true_block_id = try compileCodeBlock(state, func, new_vars, if_.block, new_block_id);
-                var true_jmp: Terminator.Jmp = .{
-                    .block_id = true_block_id,
-                    .args = try .initCapacity(gpa, new_vars.len),
-                };
-
-                for (new_vars) |ident| {
-                    true_jmp.args.appendAssumeCapacity(ident_map.get(ident) orelse unreachable);
-                }
+                const end_block_id: u32 = @intCast(func.blocks.items.len);
+                try func.blocks.append(gpa, .{
+                    .arg_count = @intCast(new_ident_map.count()),
+                    .next_value_ref = @enumFromInt(@as(u32, @intCast(new_ident_map.count()))),
+                    .instructions = .empty,
+                    .terminator = .none,
+                });
 
                 func.blocks.items[block_id].terminator = .{ .branch = .{
                     .condition = condition,
-                    .true_jmp = true_jmp,
+                    .true_jmp = .{
+                        .block_id = true_block_id,
+                        .args = .fromOwnedSlice(try gpa.dupe(ValueRef, new_ident_map.values())),
+                    },
                     .false_jmp = .{
-                        .block_id = new_block_id,
-                        .args = try true_jmp.args.clone(gpa),
+                        .block_id = end_block_id,
+                        .args = .fromOwnedSlice(try gpa.dupe(ValueRef, new_ident_map.values())),
                     },
                 } };
 
-                block_id = new_block_id;
-                ident_map.clearRetainingCapacity();
-                for (0.., new_vars) |arg_id, ident| {
-                    try ident_map.put(gpa, ident, @enumFromInt(arg_id));
+                const true_block_result = try compileCodeBlock(state, func, &new_ident_map, if_.block, true_block_id);
+                switch (true_block_result) {
+                    .returned => {},
+                    .continued => |continued| {
+                        std.debug.assert(func.blocks.items[continued.current_block_id].terminator == .none);
+
+                        func.blocks.items[continued.current_block_id].terminator = .{ .jmp = .{
+                            .block_id = end_block_id,
+                            .args = .fromOwnedSlice(continued.args),
+                        } };
+                    },
+                }
+
+                block_id = end_block_id;
+                for (new_ident_map.values(), 0..) |*val, i| {
+                    val.* = @enumFromInt(@as(u32, @intCast(i)));
                 }
             },
         }
     }
 
-    var jmp: Terminator.Jmp = .{
-        .block_id = ret_block_id,
-        .args = try .initCapacity(gpa, vars.len),
-    };
-
-    for (vars) |ident| {
-        jmp.args.appendAssumeCapacity(ident_map.get(ident) orelse unreachable);
+    var args: std.ArrayList(ValueRef) = try .initCapacity(gpa, ident_map.count());
+    for (ident_map.keys()) |ident| {
+        args.appendAssumeCapacity(new_ident_map.get(ident) orelse unreachable);
     }
 
-    func.blocks.items[block_id].terminator = .{ .jmp = jmp };
-    return first_block_id;
+    return .{ .continued = .{
+        .current_block_id = block_id,
+        .args = try args.toOwnedSlice(gpa),
+    } };
 }
 
 pub fn compileExpr(state: State, block: *Block, ident_map: *IdentMap, expr: *const parser.Expression) !ValueRef {

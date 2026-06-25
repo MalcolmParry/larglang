@@ -23,11 +23,11 @@ pub fn main(init: std.process.Init) !void {
         .head = 0,
     };
 
-    while (true) {
-        const token = lexer.popToken();
-        std.log.info("{f}", .{token.format(&lexer)});
-        if (token == .eof) break;
-    }
+    // while (true) {
+    //     const token = lexer.popToken();
+    //     std.log.info("{f}", .{token.format(&lexer)});
+    //     if (token == .eof) break;
+    // }
 
     lexer.head = 0;
     const ast = try parser.parse(.{
@@ -36,7 +36,7 @@ pub fn main(init: std.process.Init) !void {
         .lexer = &lexer,
     });
 
-    std.log.info("\n{f}", .{ast.format(&lexer)});
+    // std.log.info("\n{f}", .{ast.format(&lexer)});
 
     var ir = try ir_gen.compileAst(.{ .gpa = alloc, .lexer = &lexer }, &ast);
     defer ir.deinit(alloc);
