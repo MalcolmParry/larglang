@@ -83,7 +83,8 @@ pub const Statement = union(enum) {
 
     pub const If = struct {
         condition: *const Expression,
-        block: CodeBlock,
+        true_block: CodeBlock,
+        else_block: CodeBlock,
     };
 
     pub const Formatter = struct {
@@ -100,14 +101,27 @@ pub const Statement = union(enum) {
                 .ret => |expr| try writer.print("ret {f}\n", .{
                     expr.format(this.lexer),
                 }),
-                .if_ => |if_| try writer.print("if {f}:\n{f}", .{
-                    if_.condition.format(this.lexer),
-                    CodeBlock.Formatter{
-                        .block = if_.block,
-                        .indent = this.indent + 1,
-                        .lexer = this.lexer,
-                    },
-                }),
+                .if_ => |if_| {
+                    try writer.print("if {f}:\n{f}", .{
+                        if_.condition.format(this.lexer),
+                        CodeBlock.Formatter{
+                            .block = if_.true_block,
+                            .indent = this.indent + 1,
+                            .lexer = this.lexer,
+                        },
+                    });
+
+                    if (if_.else_block.statements.len > 0) {
+                        for (0..this.indent) |_| try writer.print("    ", .{});
+                        try writer.print("else:\n{f}", .{
+                            CodeBlock.Formatter{
+                                .block = if_.else_block,
+                                .indent = this.indent + 1,
+                                .lexer = this.lexer,
+                            },
+                        });
+                    }
+                },
             }
         }
     };
@@ -263,11 +277,17 @@ pub fn parseStatement(state: State) Error!Statement {
             _ = try popExpectToken(state, .lparen);
             const expr = try parseExpr(state, 0);
             _ = try popExpectToken(state, .rparen);
-            const block = try parseCodeBlock(state);
+            const true_block = try parseCodeBlock(state);
+
+            const else_block: CodeBlock = if (state.lexer.peekToken() == .else_) blk: {
+                _ = state.lexer.popToken();
+                break :blk try parseCodeBlock(state);
+            } else .{ .statements = &.{} };
 
             return .{ .if_ = .{
                 .condition = expr,
-                .block = block,
+                .true_block = true_block,
+                .else_block = else_block,
             } };
         },
         else => return error.ParseFailed,

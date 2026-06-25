@@ -19,7 +19,6 @@ pub const FileScope = struct {
 
 pub const Func = struct {
     name: Slice,
-    entry_block_id: u32,
     blocks: std.ArrayList(Block),
 
     pub fn deinit(func: *Func, alloc: std.mem.Allocator) void {
@@ -188,7 +187,6 @@ pub fn compileAst(state: State, ast: *const parser.FileScope) !FileScope {
         var func: Func = .{
             .blocks = .empty,
             .name = ast_func.name,
-            .entry_block_id = 0,
         };
 
         try func.blocks.append(gpa, .{
@@ -220,7 +218,6 @@ pub const CompileCodeBlockResult = union(enum) {
     };
 };
 
-/// returns current block id
 pub fn compileCodeBlock(state: State, func: *Func, ident_map: *const IdentMap, ast_block: parser.CodeBlock, first_block_id: u32) !CompileCodeBlockResult {
     const gpa = state.gpa;
     var new_ident_map = try ident_map.clone(gpa);
@@ -240,6 +237,7 @@ pub fn compileCodeBlock(state: State, func: *Func, ident_map: *const IdentMap, a
             },
             .if_ => |if_| {
                 const condition = try compileExpr(state, &func.blocks.items[block_id], &new_ident_map, if_.condition);
+                const has_else = if_.else_block.statements.len > 0;
 
                 const true_block_id: u32 = @intCast(func.blocks.items.len);
                 try func.blocks.append(gpa, .{
@@ -257,6 +255,14 @@ pub fn compileCodeBlock(state: State, func: *Func, ident_map: *const IdentMap, a
                     .terminator = .none,
                 });
 
+                const else_block_id: u32 = if (has_else) @intCast(func.blocks.items.len) else end_block_id;
+                if (has_else) try func.blocks.append(gpa, .{
+                    .arg_count = @intCast(new_ident_map.count()),
+                    .next_value_ref = @enumFromInt(@as(u32, @intCast(new_ident_map.count()))),
+                    .instructions = .empty,
+                    .terminator = .none,
+                });
+
                 func.blocks.items[block_id].terminator = .{ .branch = .{
                     .condition = condition,
                     .true_jmp = .{
@@ -264,12 +270,12 @@ pub fn compileCodeBlock(state: State, func: *Func, ident_map: *const IdentMap, a
                         .args = .fromOwnedSlice(try gpa.dupe(ValueRef, new_ident_map.values())),
                     },
                     .false_jmp = .{
-                        .block_id = end_block_id,
+                        .block_id = else_block_id,
                         .args = .fromOwnedSlice(try gpa.dupe(ValueRef, new_ident_map.values())),
                     },
                 } };
 
-                const true_block_result = try compileCodeBlock(state, func, &new_ident_map, if_.block, true_block_id);
+                const true_block_result = try compileCodeBlock(state, func, &new_ident_map, if_.true_block, true_block_id);
                 switch (true_block_result) {
                     .returned => {},
                     .continued => |continued| {
@@ -280,6 +286,23 @@ pub fn compileCodeBlock(state: State, func: *Func, ident_map: *const IdentMap, a
                             .args = .fromOwnedSlice(continued.args),
                         } };
                     },
+                }
+
+                if (has_else) {
+                    const else_block_result = try compileCodeBlock(state, func, &new_ident_map, if_.else_block, else_block_id);
+                    switch (else_block_result) {
+                        .returned => {},
+                        .continued => |continued| {
+                            std.debug.assert(func.blocks.items[continued.current_block_id].terminator == .none);
+
+                            func.blocks.items[continued.current_block_id].terminator = .{ .jmp = .{
+                                .block_id = end_block_id,
+                                .args = .fromOwnedSlice(continued.args),
+                            } };
+                        },
+                    }
+
+                    if (true_block_result == .returned and else_block_result == .returned) return .returned;
                 }
 
                 block_id = end_block_id;

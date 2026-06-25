@@ -3,6 +3,8 @@ fn main {
 	
 	if (21 == 8) {
 		x = x + 7;
+	} else {
+		x = x - 3;
 	}
 
 	return x + (12 - 3) * 6 / 3;

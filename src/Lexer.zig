@@ -40,6 +40,7 @@ pub const Token = union(enum) {
     func,
     ret,
     if_,
+    else_,
 
     // errors
     err_invalid_char: u32,
@@ -128,6 +129,7 @@ fn handleIdent(lexer: *Lexer) Token {
     if (std.mem.eql(u8, ident, "fn")) return .func;
     if (std.mem.eql(u8, ident, "return")) return .ret;
     if (std.mem.eql(u8, ident, "if")) return .if_;
+    if (std.mem.eql(u8, ident, "else")) return .else_;
 
     return .{ .ident = .{
         .start = @intCast(start),
