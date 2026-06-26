@@ -90,10 +90,10 @@ pub const Terminator = union(enum) {
         switch (term.*) {
             .none => {},
             .ret => {},
-            .jmp => |*jmp| jmp.args.deinit(alloc),
+            .jmp => |*jmp| jmp.deinit(alloc),
             .branch => |*branch| {
-                branch.true_jmp.args.deinit(alloc);
-                branch.false_jmp.args.deinit(alloc);
+                branch.true_jmp.deinit(alloc);
+                branch.false_jmp.deinit(alloc);
             },
         }
     }
@@ -101,6 +101,10 @@ pub const Terminator = union(enum) {
     pub const Jmp = struct {
         block_id: u32,
         args: std.ArrayList(ValueRef),
+
+        pub fn deinit(jmp: *Jmp, alloc: std.mem.Allocator) void {
+            jmp.args.deinit(alloc);
+        }
 
         pub fn format(this: @This(), writer: *std.Io.Writer) std.Io.Writer.Error!void {
             try writer.print("@{}(", .{this.block_id});
@@ -359,6 +363,164 @@ pub fn compileExpr(state: State, block: *Block, ident_map: *IdentMap, expr: *con
         },
         .ident => |ident| {
             return ident_map.get(ident.get(state.lexer)) orelse error.CompileFailed;
+        },
+    }
+}
+
+pub fn removeUnusedValues(alloc: std.mem.Allocator, block: *Block) !void {
+    const val_count = @intFromEnum(block.next_value_ref);
+    var unused: std.DynamicBitSetUnmanaged = try .initEmpty(alloc, val_count);
+    defer unused.deinit(alloc);
+
+    for (block.instructions.items) |inst| {
+        switch (inst) {
+            .imm => |imm| unused.set(@intFromEnum(imm.dest)),
+            .add, .sub, .mul, .div, .equal => |bin| unused.set(@intFromEnum(bin.dest)),
+        }
+    }
+
+    for (block.instructions.items) |inst| {
+        switch (inst) {
+            .imm => {},
+            .add, .sub, .mul, .div, .equal => |bin| {
+                unused.unset(@intFromEnum(bin.left));
+                unused.unset(@intFromEnum(bin.right));
+            },
+        }
+    }
+
+    switch (block.terminator) {
+        .none => {},
+        .jmp => |jmp| {
+            for (jmp.args.items) |arg| unused.unset(@intFromEnum(arg));
+        },
+        .branch => |branch| {
+            unused.unset(@intFromEnum(branch.condition));
+            for (branch.true_jmp.args.items) |arg| unused.unset(@intFromEnum(arg));
+            for (branch.false_jmp.args.items) |arg| unused.unset(@intFromEnum(arg));
+        },
+        .ret => |val| unused.unset(@intFromEnum(val)),
+    }
+
+    while (unused.findFirstSet()) |i_ref| {
+        unused.unset(i_ref);
+        const ref: ValueRef = @enumFromInt(i_ref);
+
+        var i: usize = 0;
+        while (i < block.instructions.items.len) {
+            const inst = block.instructions.items[i];
+            const dest: ValueRef = switch (inst) {
+                .imm => |imm| imm.dest,
+                .add, .sub, .mul, .div, .equal => |bin| bin.dest,
+            };
+
+            if (dest == ref) {
+                _ = block.instructions.orderedRemove(i);
+            } else {
+                i += 1;
+            }
+        }
+    }
+}
+
+pub fn foldConstants(alloc: std.mem.Allocator, block: *Block) !void {
+    while (true) {
+        var dirty: bool = false;
+
+        for (block.instructions.items) |*instruction| {
+            switch (instruction.*) {
+                .imm => {},
+                .add, .sub, .mul, .div, .equal => |bin| {
+                    const left = getImmediate(block, bin.left) orelse continue;
+                    const right = getImmediate(block, bin.right) orelse continue;
+
+                    const result: u64 = switch (instruction.*) {
+                        .add => left +% right,
+                        .sub => left -% right,
+                        .mul => left *% right,
+                        .div => try std.math.divTrunc(u64, left, right),
+                        .equal => @intFromBool(left == right),
+                        else => unreachable,
+                    };
+
+                    dirty = true;
+                    instruction.* = .{ .imm = .{
+                        .dest = bin.dest,
+                        .value = result,
+                    } };
+                },
+            }
+        }
+
+        if (!dirty) break;
+    }
+
+    blk: switch (block.terminator) {
+        .none, .jmp, .ret => {},
+        .branch => |*branch| {
+            const val = getImmediate(block, branch.condition) orelse break :blk;
+            const jmp = if (val != 0) branch.true_jmp else branch.false_jmp;
+            const other = if (val != 0) &branch.false_jmp else &branch.true_jmp;
+            other.deinit(alloc);
+
+            block.terminator = .{ .jmp = jmp };
+        },
+    }
+}
+
+pub fn getImmediate(block: *const Block, ref: ValueRef) ?u64 {
+    for (block.instructions.items) |instruction| {
+        const imm = if (instruction == .imm) instruction.imm else continue;
+
+        if (imm.dest == ref) return imm.value;
+    }
+
+    return null;
+}
+
+pub fn removeUnreachableBlocks(alloc: std.mem.Allocator, func: *Func) !void {
+    var unused: std.DynamicBitSetUnmanaged = try .initFull(alloc, func.blocks.items.len);
+    defer unused.deinit(alloc);
+    markBlockRefs(func, &unused, 0);
+
+    while (unused.findFirstSet()) |block_id_usize| {
+        const block_id: u32 = @intCast(block_id_usize);
+        unused.unset(block_id);
+
+        func.blocks.items[block_id].deinit(alloc);
+        _ = func.blocks.swapRemove(block_id);
+
+        const last: u32 = @intCast(func.blocks.items.len);
+        if (block_id == last) continue;
+        unused.setValue(block_id, unused.isSet(last));
+
+        for (func.blocks.items) |*block| {
+            switch (block.terminator) {
+                .none, .ret => {},
+                .jmp => |*jmp| {
+                    if (jmp.block_id == last) jmp.block_id = block_id;
+                },
+                .branch => |*branch| {
+                    if (branch.true_jmp.block_id == last) branch.true_jmp.block_id = block_id;
+                    if (branch.false_jmp.block_id == last) branch.false_jmp.block_id = block_id;
+                },
+            }
+        }
+    }
+}
+
+fn markBlockRefs(func: *const Func, unused: *std.DynamicBitSetUnmanaged, block_id: u32) void {
+    unused.unset(block_id);
+
+    const block = &func.blocks.items[block_id];
+    switch (block.terminator) {
+        .none, .ret => {},
+        .jmp => |jmp| {
+            markBlockRefs(func, unused, jmp.block_id);
+        },
+        .branch => |branch| {
+            markBlockRefs(func, unused, branch.true_jmp.block_id);
+            markBlockRefs(func, unused, branch.false_jmp.block_id);
         },
     }
 }

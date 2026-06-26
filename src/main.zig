@@ -41,7 +41,19 @@ pub fn main(init: std.process.Init) !void {
     var ir = try ir_gen.compileAst(.{ .gpa = alloc, .lexer = &lexer }, &ast);
     defer ir.deinit(alloc);
 
-    for (ir.funcs.items) |func| {
+    for (ir.funcs.items) |*func| {
+        std.log.info("\nfn {s}:\n{f}", .{
+            func.name.get(&lexer),
+            func,
+        });
+
+        for (func.blocks.items) |*block| {
+            try ir_gen.foldConstants(alloc, block);
+            try ir_gen.removeUnusedValues(alloc, block);
+        }
+
+        try ir_gen.removeUnreachableBlocks(alloc, func);
+
         std.log.info("\nfn {s}:\n{f}", .{
             func.name.get(&lexer),
             func,
