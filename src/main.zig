@@ -47,12 +47,7 @@ pub fn main(init: std.process.Init) !void {
             func,
         });
 
-        for (func.blocks.items) |*block| {
-            try ir_gen.foldConstants(alloc, block);
-            try ir_gen.removeUnusedValues(alloc, block);
-        }
-
-        try ir_gen.removeUnreachableBlocks(alloc, func);
+        try ir_gen.optimize(alloc, func);
 
         std.log.info("\nfn {s}:\n{f}", .{
             func.name.get(&lexer),
