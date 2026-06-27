@@ -46,24 +46,25 @@ pub const Func = struct {
 
 pub const Block = struct {
     arg_count: u32,
-    next_value_ref: ValueRef,
-    instructions: std.ArrayList(Instruction),
+    insts: std.ArrayList(Inst),
     terminator: Terminator,
 
     pub fn deinit(block: *Block, alloc: std.mem.Allocator) void {
-        block.instructions.deinit(alloc);
+        block.insts.deinit(alloc);
         block.terminator.deinit(alloc);
     }
 
-    fn allocValueRef(block: *Block) ValueRef {
-        const result = block.next_value_ref;
-        block.next_value_ref = @enumFromInt(@intFromEnum(block.next_value_ref) + 1);
-        return result;
-    }
-
     pub fn format(this: @This(), writer: *std.Io.Writer) std.Io.Writer.Error!void {
-        for (this.instructions.items) |instruction| {
-            try writer.print("{f}\n", .{instruction});
+        for (this.insts.items, 0..) |inst, inst_id| {
+            switch (inst) {
+                .imm => |val| try writer.print("${} = {}\n", .{ inst_id, val }),
+                .add, .sub, .mul, .div, .equal => |bin| try writer.print("${} = {s} {f}, {f}\n", .{
+                    inst_id,
+                    @tagName(inst),
+                    bin.left,
+                    bin.right,
+                }),
+            }
         }
 
         switch (this.terminator) {
@@ -127,16 +128,27 @@ pub const Terminator = union(enum) {
     };
 };
 
-pub const ValueRef = enum(u32) {
-    _,
+pub const ValueRef = packed struct(u32) {
+    /// instruction index when tag = .inst
+    /// arg index when tag = .arg
+    data: u31,
+    tag: Tag,
+
+    pub const Tag = enum(u1) {
+        inst,
+        arg,
+    };
 
     pub fn format(this: @This(), writer: *std.Io.Writer) std.Io.Writer.Error!void {
-        try writer.print("%{}", .{@intFromEnum(this)});
+        switch (this.tag) {
+            .inst => try writer.print("${}", .{this.data}),
+            .arg => try writer.print("%{}", .{this.data}),
+        }
     }
 };
 
-pub const Instruction = union(enum) {
-    imm: Immediate,
+pub const Inst = union(enum) {
+    imm: u64,
     add: BinOp,
     sub: BinOp,
     mul: BinOp,
@@ -144,30 +156,10 @@ pub const Instruction = union(enum) {
 
     equal: BinOp,
 
-    pub const Immediate = struct {
-        dest: ValueRef,
-        value: u64,
-    };
-
     pub const BinOp = struct {
-        dest: ValueRef,
         left: ValueRef,
         right: ValueRef,
     };
-
-    pub fn format(this: @This(), writer: *std.Io.Writer) std.Io.Writer.Error!void {
-        switch (this) {
-            .imm => |imm| try writer.print("{f} = {}", .{ imm.dest, imm.value }),
-            .add, .sub, .mul, .div, .equal => |bin| {
-                try writer.print("{f} = {s} {f}, {f}", .{
-                    bin.dest,
-                    @tagName(this),
-                    bin.left,
-                    bin.right,
-                });
-            },
-        }
-    }
 };
 
 pub const State = struct {
@@ -189,9 +181,8 @@ pub fn compileAst(state: State, ast: *const parser.FileScope) !FileScope {
         };
 
         try func.blocks.append(gpa, .{
-            .next_value_ref = @enumFromInt(0),
             .arg_count = 0,
-            .instructions = .empty,
+            .insts = .empty,
             .terminator = .none,
         });
 
@@ -201,13 +192,12 @@ pub fn compileAst(state: State, ast: *const parser.FileScope) !FileScope {
             .continued => |continued| {
                 gpa.free(continued.args);
                 const block = &func.blocks.items[continued.current_block_id];
-                const ret_val = block.allocValueRef();
 
-                try block.instructions.append(gpa, .{ .imm = .{
-                    .dest = ret_val,
-                    .value = 0,
-                } });
-                block.terminator = .{ .ret = ret_val };
+                try block.insts.append(gpa, .{ .imm = 0 });
+                block.terminator = .{ .ret = .{
+                    .tag = .inst,
+                    .data = @intCast(block.insts.items.len - 1),
+                } };
             },
         }
 
@@ -247,28 +237,33 @@ pub fn compileCodeBlock(state: State, func: *Func, ident_map: *const IdentMap, a
             .if_ => |if_| {
                 const condition = try compileExpr(state, &func.blocks.items[block_id], &new_ident_map, if_.condition);
                 const has_else = if_.else_block.statements.len > 0;
+                const args: std.ArrayList(ValueRef) = .fromOwnedSlice(try gpa.dupe(ValueRef, new_ident_map.values()));
+
+                for (new_ident_map.values(), 0..) |*val, i| {
+                    val.* = .{
+                        .tag = .arg,
+                        .data = @intCast(i),
+                    };
+                }
 
                 const true_block_id: u32 = @intCast(func.blocks.items.len);
                 try func.blocks.append(gpa, .{
                     .arg_count = @intCast(new_ident_map.count()),
-                    .next_value_ref = @enumFromInt(@as(u32, @intCast(new_ident_map.count()))),
-                    .instructions = .empty,
+                    .insts = .empty,
                     .terminator = .none,
                 });
 
                 const end_block_id: u32 = @intCast(func.blocks.items.len);
                 try func.blocks.append(gpa, .{
                     .arg_count = @intCast(new_ident_map.count()),
-                    .next_value_ref = @enumFromInt(@as(u32, @intCast(new_ident_map.count()))),
-                    .instructions = .empty,
+                    .insts = .empty,
                     .terminator = .none,
                 });
 
                 const else_block_id: u32 = if (has_else) @intCast(func.blocks.items.len) else end_block_id;
                 if (has_else) try func.blocks.append(gpa, .{
                     .arg_count = @intCast(new_ident_map.count()),
-                    .next_value_ref = @enumFromInt(@as(u32, @intCast(new_ident_map.count()))),
-                    .instructions = .empty,
+                    .insts = .empty,
                     .terminator = .none,
                 });
 
@@ -276,11 +271,11 @@ pub fn compileCodeBlock(state: State, func: *Func, ident_map: *const IdentMap, a
                     .condition = condition,
                     .true_jmp = .{
                         .block_id = true_block_id,
-                        .args = .fromOwnedSlice(try gpa.dupe(ValueRef, new_ident_map.values())),
+                        .args = args,
                     },
                     .false_jmp = .{
                         .block_id = else_block_id,
-                        .args = .fromOwnedSlice(try gpa.dupe(ValueRef, new_ident_map.values())),
+                        .args = try args.clone(gpa),
                     },
                 } };
 
@@ -315,9 +310,6 @@ pub fn compileCodeBlock(state: State, func: *Func, ident_map: *const IdentMap, a
                 }
 
                 block_id = end_block_id;
-                for (new_ident_map.values(), 0..) |*val, i| {
-                    val.* = @enumFromInt(@as(u32, @intCast(i)));
-                }
             },
         }
     }
@@ -338,24 +330,21 @@ pub fn compileExpr(state: State, block: *Block, ident_map: *IdentMap, expr: *con
 
     switch (expr.*) {
         .int_lit => |val| {
-            const dest = block.allocValueRef();
-            try block.instructions.append(gpa, .{ .imm = .{
-                .dest = dest,
-                .value = val,
-            } });
-            return dest;
+            try block.insts.append(gpa, .{ .imm = val });
+            return .{
+                .tag = .inst,
+                .data = @intCast(block.insts.items.len - 1),
+            };
         },
         .bin => |bin| {
             const left_dest = try compileExpr(state, block, ident_map, bin.left);
             const right_dest = try compileExpr(state, block, ident_map, bin.right);
-            const dest = block.allocValueRef();
-            const bin_op: Instruction.BinOp = .{
-                .dest = dest,
+            const bin_op: Inst.BinOp = .{
                 .left = left_dest,
                 .right = right_dest,
             };
 
-            const inst: Instruction = switch (bin.op) {
+            const inst: Inst = switch (bin.op) {
                 .add => .{ .add = bin_op },
                 .sub => .{ .sub = bin_op },
                 .mul => .{ .mul = bin_op },
@@ -363,8 +352,11 @@ pub fn compileExpr(state: State, block: *Block, ident_map: *IdentMap, expr: *con
                 .equal => .{ .equal = bin_op },
             };
 
-            try block.instructions.append(gpa, inst);
-            return dest;
+            try block.insts.append(gpa, inst);
+            return .{
+                .tag = .inst,
+                .data = @intCast(block.insts.items.len - 1),
+            };
         },
         .ident => |ident| {
             return ident_map.get(ident.get(state.lexer)) orelse error.CompileFailed;
@@ -372,286 +364,289 @@ pub fn compileExpr(state: State, block: *Block, ident_map: *IdentMap, expr: *con
     }
 }
 
-pub fn removeUnusedValues(alloc: std.mem.Allocator, block: *Block) !bool {
-    var dirty: bool = false;
-
-    const val_count = @intFromEnum(block.next_value_ref);
-    var unused: std.DynamicBitSetUnmanaged = try .initEmpty(alloc, val_count);
-    defer unused.deinit(alloc);
-
-    for (block.instructions.items) |inst| {
-        switch (inst) {
-            .imm => |imm| unused.set(@intFromEnum(imm.dest)),
-            .add, .sub, .mul, .div, .equal => |bin| unused.set(@intFromEnum(bin.dest)),
-        }
-    }
-
-    for (block.instructions.items) |inst| {
-        switch (inst) {
-            .imm => {},
-            .add, .sub, .mul, .div, .equal => |bin| {
-                unused.unset(@intFromEnum(bin.left));
-                unused.unset(@intFromEnum(bin.right));
-            },
-        }
-    }
-
-    switch (block.terminator) {
-        .none => {},
-        .jmp => |jmp| {
-            for (jmp.args.items) |arg| unused.unset(@intFromEnum(arg));
-        },
-        .branch => |branch| {
-            unused.unset(@intFromEnum(branch.condition));
-            for (branch.true_jmp.args.items) |arg| unused.unset(@intFromEnum(arg));
-            for (branch.false_jmp.args.items) |arg| unused.unset(@intFromEnum(arg));
-        },
-        .ret => |val| unused.unset(@intFromEnum(val)),
-    }
-
-    while (unused.findFirstSet()) |i_ref| {
-        unused.unset(i_ref);
-        dirty = true;
-        const ref: ValueRef = @enumFromInt(i_ref);
-
-        var i: usize = 0;
-        while (i < block.instructions.items.len) {
-            const inst = block.instructions.items[i];
-            const dest: ValueRef = switch (inst) {
-                .imm => |imm| imm.dest,
-                .add, .sub, .mul, .div, .equal => |bin| bin.dest,
-            };
-
-            if (dest == ref) {
-                _ = block.instructions.orderedRemove(i);
-            } else {
-                i += 1;
-            }
-        }
-    }
-
-    return dirty;
-}
-
-pub fn foldConstants(alloc: std.mem.Allocator, block: *Block) !bool {
-    var dirty: bool = false;
-
-    for (block.instructions.items) |*instruction| {
-        switch (instruction.*) {
-            .imm => {},
-            .add, .sub, .mul, .div, .equal => |bin| {
-                const left = getImmediate(block, bin.left) orelse continue;
-                const right = getImmediate(block, bin.right) orelse continue;
-
-                const result: u64 = switch (instruction.*) {
-                    .add => left +% right,
-                    .sub => left -% right,
-                    .mul => left *% right,
-                    .div => try std.math.divTrunc(u64, left, right),
-                    .equal => @intFromBool(left == right),
-                    else => unreachable,
-                };
-
-                dirty = true;
-                instruction.* = .{ .imm = .{
-                    .dest = bin.dest,
-                    .value = result,
-                } };
-            },
-        }
-    }
-
-    blk: switch (block.terminator) {
-        .none, .jmp, .ret => {},
-        .branch => |*branch| {
-            const val = getImmediate(block, branch.condition) orelse break :blk;
-            const jmp = if (val != 0) branch.true_jmp else branch.false_jmp;
-            const other = if (val != 0) &branch.false_jmp else &branch.true_jmp;
-
-            dirty = true;
-            other.deinit(alloc);
-            block.terminator = .{ .jmp = jmp };
-        },
-    }
-
-    return dirty;
-}
-
-pub fn getImmediate(block: *const Block, ref: ValueRef) ?u64 {
-    for (block.instructions.items) |instruction| {
-        const imm = if (instruction == .imm) instruction.imm else continue;
-
-        if (imm.dest == ref) return imm.value;
-    }
-
-    return null;
-}
-
-pub fn removeUnreachableBlocks(alloc: std.mem.Allocator, func: *Func) !void {
-    var unused: std.DynamicBitSetUnmanaged = try .initFull(alloc, func.blocks.items.len);
-    defer unused.deinit(alloc);
-    markBlockRefs(func, &unused, 0);
-
-    while (unused.findFirstSet()) |block_id_usize| {
-        const block_id: u32 = @intCast(block_id_usize);
-        unused.unset(block_id);
-
-        func.blocks.items[block_id].deinit(alloc);
-        _ = func.blocks.swapRemove(block_id);
-
-        const last: u32 = @intCast(func.blocks.items.len);
-        if (block_id == last) continue;
-        unused.setValue(block_id, unused.isSet(last));
-        unused.unset(last);
-
-        for (func.blocks.items) |*block| {
-            switch (block.terminator) {
-                .none, .ret => {},
-                .jmp => |*jmp| {
-                    if (jmp.block_id == last) jmp.block_id = block_id;
-                },
-                .branch => |*branch| {
-                    if (branch.true_jmp.block_id == last) branch.true_jmp.block_id = block_id;
-                    if (branch.false_jmp.block_id == last) branch.false_jmp.block_id = block_id;
-                },
-            }
-        }
-    }
-}
-
-fn markBlockRefs(func: *const Func, unused: *std.DynamicBitSetUnmanaged, block_id: u32) void {
-    if (!unused.isSet(block_id)) return;
-    unused.unset(block_id);
-
-    const block = &func.blocks.items[block_id];
-    switch (block.terminator) {
-        .none, .ret => {},
-        .jmp => |jmp| {
-            markBlockRefs(func, unused, jmp.block_id);
-        },
-        .branch => |branch| {
-            markBlockRefs(func, unused, branch.true_jmp.block_id);
-            markBlockRefs(func, unused, branch.false_jmp.block_id);
-        },
-    }
-}
-
-pub fn mergeBlocks(alloc: std.mem.Allocator, func: *Func) !bool {
-    var dirty: bool = false;
-
-    for (func.blocks.items, 0..) |*block, block_id| {
-        if (block.terminator != .jmp) continue;
-        const other_id = block.terminator.jmp.block_id;
-        if (other_id == block_id) continue;
-        const other = &func.blocks.items[other_id];
-
-        var ref_count: usize = 0;
-        for (func.blocks.items) |x| {
-            switch (x.terminator) {
-                .none, .ret => {},
-                .jmp => |jmp| {
-                    if (jmp.block_id == other_id) ref_count += 1;
-                },
-                .branch => |branch| {
-                    if (branch.true_jmp.block_id == other_id) ref_count += 1;
-                    if (branch.false_jmp.block_id == other_id) ref_count += 1;
-                },
-            }
-        }
-
-        if (ref_count != 1) continue;
-
-        dirty = true;
-        var old_to_new_val: std.hash_map.AutoHashMapUnmanaged(ValueRef, ValueRef) = .empty;
-        defer old_to_new_val.deinit(alloc);
-
-        for (block.terminator.jmp.args.items, 0..) |val, arg| {
-            try old_to_new_val.put(alloc, @enumFromInt(arg), val);
-        }
-
-        for (other.instructions.items) |inst| {
-            switch (inst) {
-                .imm => |imm| {
-                    const new = block.allocValueRef();
-                    try old_to_new_val.put(alloc, imm.dest, new);
-                    try block.instructions.append(alloc, .{ .imm = .{
-                        .dest = new,
-                        .value = imm.value,
-                    } });
-                },
-                .add, .sub, .mul, .div, .equal => |bin| {
-                    const new_dest = block.allocValueRef();
-                    const new_left = old_to_new_val.get(bin.left) orelse return error.BadIr;
-                    const new_right = old_to_new_val.get(bin.right) orelse return error.BadIr;
-                    try old_to_new_val.put(alloc, bin.dest, new_dest);
-
-                    const new: Instruction.BinOp = .{
-                        .dest = new_dest,
-                        .left = new_left,
-                        .right = new_right,
-                    };
-
-                    const new_inst: Instruction = switch (inst) {
-                        .add => .{ .add = new },
-                        .sub => .{ .sub = new },
-                        .mul => .{ .mul = new },
-                        .div => .{ .div = new },
-                        .equal => .{ .equal = new },
-                        else => unreachable,
-                    };
-
-                    try block.instructions.append(alloc, new_inst);
-                },
-            }
-        }
-
-        block.terminator.deinit(alloc);
-        block.terminator = other.terminator;
-
-        switch (block.terminator) {
-            .none => {},
-            .ret => |*val| {
-                val.* = old_to_new_val.get(val.*) orelse return error.BadIr;
-            },
-            .jmp => |jmp| {
-                for (jmp.args.items) |*arg| {
-                    arg.* = old_to_new_val.get(arg.*) orelse return error.BadIr;
-                }
-            },
-            .branch => |*branch| {
-                branch.condition = old_to_new_val.get(branch.condition) orelse return error.BadIr;
-
-                for (branch.true_jmp.args.items) |*arg| {
-                    arg.* = old_to_new_val.get(arg.*) orelse return error.BadIr;
-                }
-
-                for (branch.false_jmp.args.items) |*arg| {
-                    arg.* = old_to_new_val.get(arg.*) orelse return error.BadIr;
-                }
-            },
-        }
-
-        other.terminator = .none;
-        other.instructions.clearAndFree(alloc);
-        other.arg_count = 0;
-        other.next_value_ref = @enumFromInt(0);
-    }
-
-    return dirty;
-}
+// pub fn removeUnusedValues(alloc: std.mem.Allocator, block: *Block) !bool {
+//     var dirty: bool = false;
+//
+//     const val_count = @intFromEnum(block.next_value_ref);
+//     var unused: std.DynamicBitSetUnmanaged = try .initEmpty(alloc, val_count);
+//     defer unused.deinit(alloc);
+//
+//     for (block.instructions.items) |inst| {
+//         switch (inst) {
+//             .imm => |imm| unused.set(@intFromEnum(imm.dest)),
+//             .add, .sub, .mul, .div, .equal => |bin| unused.set(@intFromEnum(bin.dest)),
+//         }
+//     }
+//
+//     for (block.instructions.items) |inst| {
+//         switch (inst) {
+//             .imm => {},
+//             .add, .sub, .mul, .div, .equal => |bin| {
+//                 unused.unset(@intFromEnum(bin.left));
+//                 unused.unset(@intFromEnum(bin.right));
+//             },
+//         }
+//     }
+//
+//     switch (block.terminator) {
+//         .none => {},
+//         .jmp => |jmp| {
+//             for (jmp.args.items) |arg| unused.unset(@intFromEnum(arg));
+//         },
+//         .branch => |branch| {
+//             unused.unset(@intFromEnum(branch.condition));
+//             for (branch.true_jmp.args.items) |arg| unused.unset(@intFromEnum(arg));
+//             for (branch.false_jmp.args.items) |arg| unused.unset(@intFromEnum(arg));
+//         },
+//         .ret => |val| unused.unset(@intFromEnum(val)),
+//     }
+//
+//     while (unused.findFirstSet()) |i_ref| {
+//         unused.unset(i_ref);
+//         dirty = true;
+//         const ref: ValueRef = @enumFromInt(i_ref);
+//
+//         var i: usize = 0;
+//         while (i < block.instructions.items.len) {
+//             const inst = block.instructions.items[i];
+//             const dest: ValueRef = switch (inst) {
+//                 .imm => |imm| imm.dest,
+//                 .add, .sub, .mul, .div, .equal => |bin| bin.dest,
+//             };
+//
+//             if (dest == ref) {
+//                 _ = block.instructions.orderedRemove(i);
+//             } else {
+//                 i += 1;
+//             }
+//         }
+//     }
+//
+//     return dirty;
+// }
+//
+// pub fn foldConstants(alloc: std.mem.Allocator, block: *Block) !bool {
+//     var dirty: bool = false;
+//
+//     for (block.instructions.items) |*instruction| {
+//         switch (instruction.*) {
+//             .imm => {},
+//             .add, .sub, .mul, .div, .equal => |bin| {
+//                 const left = getImmediate(block, bin.left) orelse continue;
+//                 const right = getImmediate(block, bin.right) orelse continue;
+//
+//                 const result: u64 = switch (instruction.*) {
+//                     .add => left +% right,
+//                     .sub => left -% right,
+//                     .mul => left *% right,
+//                     .div => try std.math.divTrunc(u64, left, right),
+//                     .equal => @intFromBool(left == right),
+//                     else => unreachable,
+//                 };
+//
+//                 dirty = true;
+//                 instruction.* = .{ .imm = .{
+//                     .dest = bin.dest,
+//                     .value = result,
+//                 } };
+//             },
+//         }
+//     }
+//
+//     blk: switch (block.terminator) {
+//         .none, .jmp, .ret => {},
+//         .branch => |*branch| {
+//             const val = getImmediate(block, branch.condition) orelse break :blk;
+//             const jmp = if (val != 0) branch.true_jmp else branch.false_jmp;
+//             const other = if (val != 0) &branch.false_jmp else &branch.true_jmp;
+//
+//             dirty = true;
+//             other.deinit(alloc);
+//             block.terminator = .{ .jmp = jmp };
+//         },
+//     }
+//
+//     return dirty;
+// }
+//
+// pub fn getImmediate(block: *const Block, ref: ValueRef) ?u64 {
+//     for (block.instructions.items) |instruction| {
+//         const imm = if (instruction == .imm) instruction.imm else continue;
+//
+//         if (imm.dest == ref) return imm.value;
+//     }
+//
+//     return null;
+// }
+//
+// pub fn removeUnreachableBlocks(alloc: std.mem.Allocator, func: *Func) !void {
+//     var unused: std.DynamicBitSetUnmanaged = try .initFull(alloc, func.blocks.items.len);
+//     defer unused.deinit(alloc);
+//     markBlockRefs(func, &unused, 0);
+//
+//     while (unused.findFirstSet()) |block_id_usize| {
+//         const block_id: u32 = @intCast(block_id_usize);
+//         unused.unset(block_id);
+//
+//         func.blocks.items[block_id].deinit(alloc);
+//         _ = func.blocks.swapRemove(block_id);
+//
+//         const last: u32 = @intCast(func.blocks.items.len);
+//         if (block_id == last) continue;
+//         unused.setValue(block_id, unused.isSet(last));
+//         unused.unset(last);
+//
+//         for (func.blocks.items) |*block| {
+//             switch (block.terminator) {
+//                 .none, .ret => {},
+//                 .jmp => |*jmp| {
+//                     if (jmp.block_id == last) jmp.block_id = block_id;
+//                 },
+//                 .branch => |*branch| {
+//                     if (branch.true_jmp.block_id == last) branch.true_jmp.block_id = block_id;
+//                     if (branch.false_jmp.block_id == last) branch.false_jmp.block_id = block_id;
+//                 },
+//             }
+//         }
+//     }
+// }
+//
+// fn markBlockRefs(func: *const Func, unused: *std.DynamicBitSetUnmanaged, block_id: u32) void {
+//     if (!unused.isSet(block_id)) return;
+//     unused.unset(block_id);
+//
+//     const block = &func.blocks.items[block_id];
+//     switch (block.terminator) {
+//         .none, .ret => {},
+//         .jmp => |jmp| {
+//             markBlockRefs(func, unused, jmp.block_id);
+//         },
+//         .branch => |branch| {
+//             markBlockRefs(func, unused, branch.true_jmp.block_id);
+//             markBlockRefs(func, unused, branch.false_jmp.block_id);
+//         },
+//     }
+// }
+//
+// pub fn mergeBlocks(alloc: std.mem.Allocator, func: *Func) !bool {
+//     var dirty: bool = false;
+//
+//     for (func.blocks.items, 0..) |*block, block_id| {
+//         if (block.terminator != .jmp) continue;
+//         const other_id = block.terminator.jmp.block_id;
+//         if (other_id == block_id) continue;
+//         const other = &func.blocks.items[other_id];
+//
+//         var ref_count: usize = 0;
+//         for (func.blocks.items) |x| {
+//             switch (x.terminator) {
+//                 .none, .ret => {},
+//                 .jmp => |jmp| {
+//                     if (jmp.block_id == other_id) ref_count += 1;
+//                 },
+//                 .branch => |branch| {
+//                     if (branch.true_jmp.block_id == other_id) ref_count += 1;
+//                     if (branch.false_jmp.block_id == other_id) ref_count += 1;
+//                 },
+//             }
+//         }
+//
+//         if (ref_count != 1) continue;
+//
+//         dirty = true;
+//         var old_to_new_val: std.hash_map.AutoHashMapUnmanaged(ValueRef, ValueRef) = .empty;
+//         defer old_to_new_val.deinit(alloc);
+//
+//         for (block.terminator.jmp.args.items, 0..) |val, arg| {
+//             try old_to_new_val.put(alloc, @enumFromInt(arg), val);
+//         }
+//
+//         for (other.instructions.items) |inst| {
+//             switch (inst) {
+//                 .imm => |imm| {
+//                     const new = block.allocValueRef();
+//                     try old_to_new_val.put(alloc, imm.dest, new);
+//                     try block.instructions.append(alloc, .{ .imm = .{
+//                         .dest = new,
+//                         .value = imm.value,
+//                     } });
+//                 },
+//                 .add, .sub, .mul, .div, .equal => |bin| {
+//                     const new_dest = block.allocValueRef();
+//                     const new_left = old_to_new_val.get(bin.left) orelse return error.BadIr;
+//                     const new_right = old_to_new_val.get(bin.right) orelse return error.BadIr;
+//                     try old_to_new_val.put(alloc, bin.dest, new_dest);
+//
+//                     const new: Inst.BinOp = .{
+//                         .dest = new_dest,
+//                         .left = new_left,
+//                         .right = new_right,
+//                     };
+//
+//                     const new_inst: Inst = switch (inst) {
+//                         .add => .{ .add = new },
+//                         .sub => .{ .sub = new },
+//                         .mul => .{ .mul = new },
+//                         .div => .{ .div = new },
+//                         .equal => .{ .equal = new },
+//                         else => unreachable,
+//                     };
+//
+//                     try block.instructions.append(alloc, new_inst);
+//                 },
+//             }
+//         }
+//
+//         block.terminator.deinit(alloc);
+//         block.terminator = other.terminator;
+//
+//         switch (block.terminator) {
+//             .none => {},
+//             .ret => |*val| {
+//                 val.* = old_to_new_val.get(val.*) orelse return error.BadIr;
+//             },
+//             .jmp => |jmp| {
+//                 for (jmp.args.items) |*arg| {
+//                     arg.* = old_to_new_val.get(arg.*) orelse return error.BadIr;
+//                 }
+//             },
+//             .branch => |*branch| {
+//                 branch.condition = old_to_new_val.get(branch.condition) orelse return error.BadIr;
+//
+//                 for (branch.true_jmp.args.items) |*arg| {
+//                     arg.* = old_to_new_val.get(arg.*) orelse return error.BadIr;
+//                 }
+//
+//                 for (branch.false_jmp.args.items) |*arg| {
+//                     arg.* = old_to_new_val.get(arg.*) orelse return error.BadIr;
+//                 }
+//             },
+//         }
+//
+//         other.terminator = .none;
+//         other.instructions.clearAndFree(alloc);
+//         other.arg_count = 0;
+//         other.next_value_ref = @enumFromInt(0);
+//     }
+//
+//     return dirty;
+// }
 
 pub fn optimize(alloc: std.mem.Allocator, func: *Func) !void {
-    while (true) {
-        var dirty: bool = false;
+    _ = alloc;
+    _ = func;
 
-        for (func.blocks.items) |*block| {
-            if (try foldConstants(alloc, block)) dirty = true;
-            if (try removeUnusedValues(alloc, block)) dirty = true;
-        }
-
-        if (try mergeBlocks(alloc, func)) dirty = true;
-        try removeUnreachableBlocks(alloc, func);
-
-        if (!dirty) break;
-    }
+    // while (true) {
+    //     var dirty: bool = false;
+    //
+    //     for (func.blocks.items) |*block| {
+    //         if (try foldConstants(alloc, block)) dirty = true;
+    //         if (try removeUnusedValues(alloc, block)) dirty = true;
+    //     }
+    //
+    //     if (try mergeBlocks(alloc, func)) dirty = true;
+    //     try removeUnreachableBlocks(alloc, func);
+    //
+    //     if (!dirty) break;
+    // }
 }
