@@ -54,15 +54,20 @@ pub const Block = struct {
         block.terminator.deinit(alloc);
     }
 
+    pub fn appendInst(block: *Block, alloc: std.mem.Allocator, inst: Inst) !ValueRef {
+        try block.insts.append(alloc, inst);
+        return .fromInst(@intCast(block.insts.items.len - 1));
+    }
+
     pub fn format(this: @This(), writer: *std.Io.Writer) std.Io.Writer.Error!void {
         for (this.insts.items, 0..) |inst, inst_id| {
-            switch (inst) {
-                .imm => |val| try writer.print("${} = {}\n", .{ inst_id, val }),
-                .add, .sub, .mul, .div, .equal => |bin| try writer.print("${} = {s} {f}, {f}\n", .{
+            switch (inst.tag) {
+                .imm => try writer.print("${} = {}\n", .{ inst_id, inst.data.imm }),
+                .add, .sub, .mul, .div, .equal => try writer.print("${} = {s} {f}, {f}\n", .{
                     inst_id,
-                    @tagName(inst),
-                    bin.left,
-                    bin.right,
+                    @tagName(inst.tag),
+                    inst.data.bin.left,
+                    inst.data.bin.right,
                 }),
             }
         }
@@ -145,21 +150,65 @@ pub const ValueRef = packed struct(u32) {
             .arg => try writer.print("%{}", .{this.data}),
         }
     }
+
+    pub fn fromInst(inst_id: u31) ValueRef {
+        return .{ .tag = .inst, .data = inst_id };
+    }
+
+    pub fn fromArg(arg_id: u31) ValueRef {
+        return .{ .tag = .arg, .data = arg_id };
+    }
 };
 
-pub const Inst = union(enum) {
-    imm: u64,
-    add: BinOp,
-    sub: BinOp,
-    mul: BinOp,
-    div: BinOp,
+pub const Inst = struct {
+    tag: Tag,
+    data: Data,
 
-    equal: BinOp,
+    pub const Tag = enum {
+        imm,
+        add,
+        sub,
+        mul,
+        div,
+        equal,
+
+        pub fn getDataKind(tag: Tag) Data.Kind {
+            return switch (tag) {
+                .imm => .imm,
+                .add, .sub, .mul, .div, .equal => .bin,
+            };
+        }
+    };
+
+    pub const Data = union {
+        imm: u64,
+        bin: BinOp,
+
+        pub const Kind = enum {
+            imm,
+            bin,
+        };
+    };
 
     pub const BinOp = struct {
         left: ValueRef,
         right: ValueRef,
     };
+
+    pub fn imm(val: u64) Inst {
+        return .{ .tag = .imm, .data = .{ .imm = val } };
+    }
+
+    pub fn bin(tag: Tag, left: ValueRef, right: ValueRef) Inst {
+        std.debug.assert(tag.getDataKind() == .bin);
+        return .{
+            .tag = tag,
+            .data = .{ .bin = .{
+                .left = left,
+                .right = right,
+            } },
+        };
+    }
 };
 
 pub const State = struct {
@@ -193,11 +242,9 @@ pub fn compileAst(state: State, ast: *const parser.FileScope) !FileScope {
                 gpa.free(continued.args);
                 const block = &func.blocks.items[continued.current_block_id];
 
-                try block.insts.append(gpa, .{ .imm = 0 });
-                block.terminator = .{ .ret = .{
-                    .tag = .inst,
-                    .data = @intCast(block.insts.items.len - 1),
-                } };
+                block.terminator = .{
+                    .ret = try block.appendInst(gpa, .imm(0)),
+                };
             },
         }
 
@@ -240,10 +287,7 @@ pub fn compileCodeBlock(state: State, func: *Func, ident_map: *const IdentMap, a
                 const args: std.ArrayList(ValueRef) = .fromOwnedSlice(try gpa.dupe(ValueRef, new_ident_map.values()));
 
                 for (new_ident_map.values(), 0..) |*val, i| {
-                    val.* = .{
-                        .tag = .arg,
-                        .data = @intCast(i),
-                    };
+                    val.* = .fromArg(@intCast(i));
                 }
 
                 const true_block_id: u32 = @intCast(func.blocks.items.len);
@@ -330,33 +374,21 @@ pub fn compileExpr(state: State, block: *Block, ident_map: *IdentMap, expr: *con
 
     switch (expr.*) {
         .int_lit => |val| {
-            try block.insts.append(gpa, .{ .imm = val });
-            return .{
-                .tag = .inst,
-                .data = @intCast(block.insts.items.len - 1),
-            };
+            return block.appendInst(gpa, .imm(val));
         },
         .bin => |bin| {
-            const left_dest = try compileExpr(state, block, ident_map, bin.left);
-            const right_dest = try compileExpr(state, block, ident_map, bin.right);
-            const bin_op: Inst.BinOp = .{
-                .left = left_dest,
-                .right = right_dest,
+            const left_ref = try compileExpr(state, block, ident_map, bin.left);
+            const right_ref = try compileExpr(state, block, ident_map, bin.right);
+
+            const tag: Inst.Tag = switch (bin.op) {
+                .add => .add,
+                .sub => .sub,
+                .mul => .mul,
+                .div => .div,
+                .equal => .equal,
             };
 
-            const inst: Inst = switch (bin.op) {
-                .add => .{ .add = bin_op },
-                .sub => .{ .sub = bin_op },
-                .mul => .{ .mul = bin_op },
-                .div => .{ .div = bin_op },
-                .equal => .{ .equal = bin_op },
-            };
-
-            try block.insts.append(gpa, inst);
-            return .{
-                .tag = .inst,
-                .data = @intCast(block.insts.items.len - 1),
-            };
+            return block.appendInst(gpa, .bin(tag, left_ref, right_ref));
         },
         .ident => |ident| {
             return ident_map.get(ident.get(state.lexer)) orelse error.CompileFailed;
