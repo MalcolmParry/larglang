@@ -128,15 +128,10 @@ pub const Terminator = union(enum) {
 };
 
 pub const ValueRef = enum(u32) {
-    none = std.math.maxInt(u32),
     _,
 
     pub fn format(this: @This(), writer: *std.Io.Writer) std.Io.Writer.Error!void {
-        if (this == .none) {
-            try writer.print("%none", .{});
-        } else {
-            try writer.print("%{}", .{@intFromEnum(this)});
-        }
+        try writer.print("%{}", .{@intFromEnum(this)});
     }
 };
 
@@ -200,10 +195,20 @@ pub fn compileAst(state: State, ast: *const parser.FileScope) !FileScope {
             .terminator = .none,
         });
 
-        const thing = try compileCodeBlock(state, &func, &.empty, ast_func.block, 0);
-        switch (thing) {
+        const compiled_block_result = try compileCodeBlock(state, &func, &.empty, ast_func.block, 0);
+        switch (compiled_block_result) {
             .returned => {},
-            .continued => |continued| gpa.free(continued.args),
+            .continued => |continued| {
+                gpa.free(continued.args);
+                const block = &func.blocks.items[continued.current_block_id];
+                const ret_val = block.allocValueRef();
+
+                try block.instructions.append(gpa, .{ .imm = .{
+                    .dest = ret_val,
+                    .value = 0,
+                } });
+                block.terminator = .{ .ret = ret_val };
+            },
         }
 
         try file_scope.funcs.append(gpa, func);
