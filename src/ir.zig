@@ -199,9 +199,9 @@ pub const Inst = struct {
             };
         }
 
-        pub fn isPure(tag: Tag) bool {
+        pub fn hasSideEffects(tag: Tag) bool {
             _ = tag;
-            return true;
+            return false;
         }
     };
 
@@ -473,7 +473,7 @@ pub fn getImmediate(block: *const Block, ref: ValueRef) ?u64 {
     };
 }
 
-pub fn removeUnusedPureInsts(alloc: std.mem.Allocator, block: *Block) !bool {
+pub fn killUnusedInstructions(alloc: std.mem.Allocator, block: *Block) !bool {
     var dirty: bool = false;
 
     var unused: std.DynamicBitSetUnmanaged = try .initFull(alloc, block.insts.items.len);
@@ -507,7 +507,7 @@ pub fn removeUnusedPureInsts(alloc: std.mem.Allocator, block: *Block) !bool {
     while (unused.findFirstSet()) |inst_id| {
         unused.unset(inst_id);
         const inst = &block.insts.items[inst_id];
-        if (!inst.tag.isPure() or inst.tag == .no_op) continue;
+        if (inst.tag.hasSideEffects() or inst.tag == .no_op) continue;
         inst.* = .noop;
         dirty = true;
     }
@@ -559,6 +559,9 @@ fn markBlockRefs(func: *const Func, unused: *std.DynamicBitSetUnmanaged, block_i
 pub fn mergeBlocks(alloc: std.mem.Allocator, func: *Func) !bool {
     var dirty: bool = false;
 
+    var old_to_new_val: std.hash_map.AutoHashMapUnmanaged(ValueRef, ValueRef) = .empty;
+    defer old_to_new_val.deinit(alloc);
+
     for (func.blocks.items, 0..) |*block, block_id| {
         if (block.terminator != .jmp) continue;
         const other_id = block.terminator.jmp.block_id;
@@ -583,62 +586,59 @@ pub fn mergeBlocks(alloc: std.mem.Allocator, func: *Func) !bool {
         if (ref_count != 1) continue;
 
         dirty = true;
-        var old_to_new_val: std.hash_map.AutoHashMapUnmanaged(ValueRef, ValueRef) = .empty;
-        defer old_to_new_val.deinit(alloc);
+        old_to_new_val.clearRetainingCapacity();
 
         for (block.terminator.jmp.args.items, 0..) |val, arg_id| {
             try old_to_new_val.put(alloc, .fromArg(@intCast(arg_id)), val);
         }
 
-        for (other.insts.items, 0..) |inst, inst_id| {
-            const old: ValueRef = .fromInst(@intCast(inst_id));
-
-            switch (inst.tag.getDataKind()) {
-                .none => {},
-                .imm => {
-                    const new = try block.appendInst(alloc, .imm(inst.data.imm));
-                    try old_to_new_val.put(alloc, old, new);
-                },
-                .bin => {
-                    const bin = inst.data.bin;
-                    const new_left = old_to_new_val.get(bin.left) orelse unreachable;
-                    const new_right = old_to_new_val.get(bin.right) orelse unreachable;
-                    const new = try block.appendInst(alloc, .bin(inst.tag, new_left, new_right));
-                    try old_to_new_val.put(alloc, old, new);
-                },
-            }
-        }
+        try appendAndRemapInsts(alloc, other.insts.items, block, &old_to_new_val);
 
         block.terminator.deinit(alloc);
         block.terminator = other.terminator;
         other.terminator = .none;
         other.kill(alloc);
 
-        switch (block.terminator) {
-            .none, .dead => unreachable,
-            .ret => |*val| {
-                val.* = old_to_new_val.get(val.*) orelse unreachable;
-            },
-            .jmp => |jmp| {
-                for (jmp.args.items) |*arg| {
-                    arg.* = old_to_new_val.get(arg.*) orelse unreachable;
-                }
-            },
-            .branch => |*branch| {
-                branch.condition = old_to_new_val.get(branch.condition) orelse unreachable;
-
-                for (branch.true_jmp.args.items) |*arg| {
-                    arg.* = old_to_new_val.get(arg.*) orelse unreachable;
-                }
-
-                for (branch.false_jmp.args.items) |*arg| {
-                    arg.* = old_to_new_val.get(arg.*) orelse unreachable;
-                }
-            },
-        }
+        remapTerminatorValRefs(&block.terminator, &old_to_new_val);
     }
 
     return dirty;
+}
+
+pub fn appendAndRemapInsts(alloc: std.mem.Allocator, src: []const Inst, dst: *Block, val_map: *std.hash_map.AutoHashMapUnmanaged(ValueRef, ValueRef)) !void {
+    try dst.insts.ensureUnusedCapacity(alloc, src.len);
+
+    for (src, 0..) |inst, inst_id| {
+        if (inst.tag == .no_op) continue;
+        const old: ValueRef = .fromInst(@intCast(inst_id));
+
+        const new = switch (inst.tag.getDataKind()) {
+            .none, .imm => try dst.appendInst(alloc, inst),
+            .bin => blk: {
+                const bin = inst.data.bin;
+                const new_left = val_map.get(bin.left) orelse unreachable;
+                const new_right = val_map.get(bin.right) orelse unreachable;
+                break :blk try dst.appendInst(alloc, .bin(inst.tag, new_left, new_right));
+            },
+        };
+
+        try val_map.put(alloc, old, new);
+    }
+}
+
+pub fn remapTerminatorValRefs(term: *Terminator, val_map: *const std.hash_map.AutoHashMapUnmanaged(ValueRef, ValueRef)) void {
+    switch (term.*) {
+        .none, .dead => unreachable,
+        .ret => |*ref| ref.* = val_map.get(ref.*) orelse unreachable,
+        .jmp => |jmp| {
+            for (jmp.args.items) |*arg| arg.* = val_map.get(arg.*) orelse unreachable;
+        },
+        .branch => |*branch| {
+            branch.condition = val_map.get(branch.condition) orelse unreachable;
+            for (branch.true_jmp.args.items) |*arg| arg.* = val_map.get(arg.*) orelse unreachable;
+            for (branch.false_jmp.args.items) |*arg| arg.* = val_map.get(arg.*) orelse unreachable;
+        },
+    }
 }
 
 pub fn optimize(alloc: std.mem.Allocator, func: *Func) !void {
@@ -649,7 +649,7 @@ pub fn optimize(alloc: std.mem.Allocator, func: *Func) !void {
             if (block.isDead()) continue;
 
             dirty = try foldConstants(alloc, block) or dirty;
-            dirty = try removeUnusedPureInsts(alloc, block) or dirty;
+            dirty = try killUnusedInstructions(alloc, block) or dirty;
         }
 
         dirty = try mergeBlocks(alloc, func) or dirty;
@@ -698,40 +698,13 @@ pub fn clean(alloc: std.mem.Allocator, func: *Func) !void {
 
         block.insts = try .initCapacity(alloc, old_insts.items.len);
 
-        for (old_insts.items, 0..) |old_inst, old_inst_id| {
-            const old_ref: ValueRef = .fromInst(@intCast(old_inst_id));
-
-            switch (old_inst.tag) {
-                .no_op => {},
-                .imm => {
-                    const new_ref = try block.appendInst(alloc, old_inst);
-                    try old_to_new_refs.put(alloc, old_ref, new_ref);
-                },
-                .add, .sub, .mul, .div, .equal => {
-                    const old_bin = old_inst.data.bin;
-                    const new_ref = try block.appendInst(alloc, .bin(
-                        old_inst.tag,
-                        old_to_new_refs.get(old_bin.left) orelse unreachable,
-                        old_to_new_refs.get(old_bin.right) orelse unreachable,
-                    ));
-
-                    try old_to_new_refs.put(alloc, old_ref, new_ref);
-                },
-            }
+        for (0..block.arg_count) |arg_id| {
+            const ref: ValueRef = .fromArg(@intCast(arg_id));
+            try old_to_new_refs.put(alloc, ref, ref);
         }
 
-        switch (block.terminator) {
-            .none, .dead => unreachable,
-            .ret => |*ret| ret.* = old_to_new_refs.get(ret.*) orelse unreachable,
-            .jmp => |jmp| {
-                for (jmp.args.items) |*arg| arg.* = old_to_new_refs.get(arg.*) orelse unreachable;
-            },
-            .branch => |*branch| {
-                branch.condition = old_to_new_refs.get(branch.condition) orelse unreachable;
-                for (branch.true_jmp.args.items) |*arg| arg.* = old_to_new_refs.get(arg.*) orelse unreachable;
-                for (branch.false_jmp.args.items) |*arg| arg.* = old_to_new_refs.get(arg.*) orelse unreachable;
-            },
-        }
+        try appendAndRemapInsts(alloc, old_insts.items, block, &old_to_new_refs);
+        remapTerminatorValRefs(&block.terminator, &old_to_new_refs);
     }
 }
 
