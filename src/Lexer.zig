@@ -32,6 +32,8 @@ pub const Token = union(enum) {
 
     // bin ops
     equal,
+    less,
+    more,
     add,
     sub,
     mul,
@@ -42,6 +44,7 @@ pub const Token = union(enum) {
     ret,
     if_,
     else_,
+    while_,
 
     // errors
     err_invalid_char: u32,
@@ -85,7 +88,7 @@ pub fn peekToken(lexer: Lexer) Token {
 }
 
 pub fn popToken(lexer: *Lexer) Token {
-    while (true) {
+    loop: while (true) {
         const c = lexer.peekChar(0) orelse return .eof;
         if (std.ascii.isWhitespace(c)) {
             lexer.head += 1;
@@ -106,11 +109,19 @@ pub fn popToken(lexer: *Lexer) Token {
                 lexer.head += 2;
                 return .equal;
             } else .assign,
+            '<' => .less,
+            '>' => .more,
             ';' => .semicolon,
             '+' => .add,
             '-' => .sub,
             '*' => .mul,
-            '/' => .div,
+            '/' => if (lexer.peekChar(1) == '/') {
+                while (true) {
+                    const c2 = lexer.peekChar(0);
+                    if (c2 == null or c2.? == '\n') continue :loop;
+                    lexer.head += 1;
+                }
+            } else .div,
             else => .{ .err_invalid_char = @intCast(lexer.head) },
         };
 
@@ -132,6 +143,7 @@ fn handleIdent(lexer: *Lexer) Token {
     if (std.mem.eql(u8, ident, "return")) return .ret;
     if (std.mem.eql(u8, ident, "if")) return .if_;
     if (std.mem.eql(u8, ident, "else")) return .else_;
+    if (std.mem.eql(u8, ident, "while")) return .while_;
 
     return .{ .ident = .{
         .start = @intCast(start),

@@ -78,7 +78,7 @@ pub const Block = struct {
             switch (inst.tag) {
                 .no_op => try writer.print("${} = noop\n", .{inst_id}),
                 .imm => try writer.print("${} = {}\n", .{ inst_id, inst.data.imm }),
-                .add, .sub, .mul, .div, .equal => try writer.print("${} = {s} {f}, {f}\n", .{
+                .add, .sub, .mul, .div, .equal, .less, .more => try writer.print("${} = {s} {f}, {f}\n", .{
                     inst_id,
                     @tagName(inst.tag),
                     inst.data.bin.left,
@@ -190,12 +190,14 @@ pub const Inst = struct {
         mul,
         div,
         equal,
+        less,
+        more,
 
         pub fn getDataKind(tag: Tag) Data.Kind {
             return switch (tag) {
                 .no_op => .none,
                 .imm => .imm,
-                .add, .sub, .mul, .div, .equal => .bin,
+                .add, .sub, .mul, .div, .equal, .less, .more => .bin,
             };
         }
 
@@ -388,6 +390,74 @@ pub fn compileCodeBlock(state: State, func: *Func, ident_map: *const IdentMap, a
 
                 block_id = end_block_id;
             },
+            .while_ => |while_| {
+                var jmp_args: std.ArrayList(ValueRef) = .fromOwnedSlice(try gpa.dupe(ValueRef, new_ident_map.values()));
+                errdefer jmp_args.deinit(gpa);
+
+                for (new_ident_map.values(), 0..) |*val, i| {
+                    val.* = .fromArg(@intCast(i));
+                }
+
+                const cond_id: BlockId = @intCast(func.blocks.items.len);
+                try func.blocks.append(gpa, .{
+                    .arg_count = @intCast(new_ident_map.count()),
+                    .insts = .empty,
+                    .terminator = .none,
+                });
+                const cond_val_ref = try compileExpr(state, &func.blocks.items[cond_id], &new_ident_map, while_.condition);
+
+                const body_id: BlockId = @intCast(func.blocks.items.len);
+                try func.blocks.append(gpa, .{
+                    .arg_count = @intCast(new_ident_map.count()),
+                    .insts = .empty,
+                    .terminator = .none,
+                });
+                const body_res = try compileCodeBlock(state, func, &new_ident_map, while_.block, body_id);
+
+                const end_id: BlockId = @intCast(func.blocks.items.len);
+                try func.blocks.append(gpa, .{
+                    .arg_count = @intCast(new_ident_map.count()),
+                    .insts = .empty,
+                    .terminator = .none,
+                });
+
+                func.blocks.items[block_id].terminator = .{ .jmp = .{
+                    .block_id = cond_id,
+                    .args = jmp_args,
+                } };
+
+                var true_jmp_args: std.ArrayList(ValueRef) = .fromOwnedSlice(try gpa.dupe(ValueRef, new_ident_map.values()));
+                errdefer true_jmp_args.deinit(gpa);
+
+                var false_jmp_args = try true_jmp_args.clone(gpa);
+                errdefer false_jmp_args.deinit(gpa);
+
+                func.blocks.items[cond_id].terminator = .{ .branch = .{
+                    .condition = cond_val_ref,
+                    .true_jmp = .{
+                        .block_id = body_id,
+                        .args = true_jmp_args,
+                    },
+                    .false_jmp = .{
+                        .block_id = end_id,
+                        .args = false_jmp_args,
+                    },
+                } };
+
+                switch (body_res) {
+                    .returned => {},
+                    .continued => |continued| {
+                        std.debug.assert(func.blocks.items[continued.current_block_id].terminator == .none);
+
+                        func.blocks.items[continued.current_block_id].terminator = .{ .jmp = .{
+                            .block_id = cond_id,
+                            .args = .fromOwnedSlice(continued.args),
+                        } };
+                    },
+                }
+
+                block_id = end_id;
+            },
         }
     }
 
@@ -419,6 +489,8 @@ pub fn compileExpr(state: State, block: *Block, ident_map: *IdentMap, expr: *con
                 .mul => .mul,
                 .div => .div,
                 .equal => .equal,
+                .less => .less,
+                .more => .more,
             };
 
             return block.appendInst(gpa, .bin(tag, left_ref, right_ref));
@@ -434,7 +506,7 @@ pub fn foldConstants(alloc: std.mem.Allocator, block: *Block) !bool {
 
     for (block.insts.items) |*inst| {
         switch (inst.tag) {
-            .add, .sub, .mul, .div, .equal => {
+            .add, .sub, .mul, .div, .equal, .less, .more => {
                 const bin = inst.data.bin;
                 const left = getImmediate(block, bin.left) orelse continue;
                 const right = getImmediate(block, bin.right) orelse continue;
@@ -445,6 +517,8 @@ pub fn foldConstants(alloc: std.mem.Allocator, block: *Block) !bool {
                     .mul => left *% right,
                     .div => try std.math.divTrunc(u64, left, right),
                     .equal => @intFromBool(left == right),
+                    .less => @intFromBool(left < right),
+                    .more => @intFromBool(left > right),
                     else => unreachable,
                 };
 
@@ -832,7 +906,7 @@ pub fn validate(func: Func) void {
             switch (inst.tag) {
                 .no_op => unreachable,
                 .imm => {},
-                .add, .sub, .mul, .div, .equal => {
+                .add, .sub, .mul, .div, .equal, .less, .more => {
                     const bin = inst.data.bin;
                     validateRef(block, bin.left, @intCast(inst_id));
                     validateRef(block, bin.right, @intCast(inst_id));

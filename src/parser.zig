@@ -82,6 +82,7 @@ pub const Statement = union(enum) {
     assign: Assign,
     ret: *const Expression,
     if_: If,
+    while_: While,
 
     pub const Assign = struct {
         ident: Slice,
@@ -92,6 +93,11 @@ pub const Statement = union(enum) {
         condition: *const Expression,
         true_block: CodeBlock,
         else_block: CodeBlock,
+    };
+
+    pub const While = struct {
+        condition: *const Expression,
+        block: CodeBlock,
     };
 
     pub const Formatter = struct {
@@ -129,6 +135,16 @@ pub const Statement = union(enum) {
                         });
                     }
                 },
+                .while_ => |while_| {
+                    try writer.print("while {f}:\n{f}", .{
+                        while_.condition.format(this.lexer),
+                        CodeBlock.Formatter{
+                            .block = while_.block,
+                            .indent = this.indent + 1,
+                            .lexer = this.lexer,
+                        },
+                    });
+                },
             }
         }
     };
@@ -146,6 +162,8 @@ pub const Expression = union(enum) {
             mul,
             div,
             equal,
+            less,
+            more,
 
             pub fn getStr(op: Op) []const u8 {
                 return switch (op) {
@@ -154,6 +172,8 @@ pub const Expression = union(enum) {
                     .mul => "*",
                     .div => "/",
                     .equal => "==",
+                    .less => "<",
+                    .more => ">",
                 };
             }
         };
@@ -319,6 +339,18 @@ pub fn parseStatement(state: State) Error!Statement {
                 .else_block = else_block,
             } };
         },
+        .while_ => {
+            _ = state.lexer.popToken();
+            _ = try popExpectToken(state, .lparen);
+            const condition = try parseExpr(state, 0);
+            _ = try popExpectToken(state, .rparen);
+            const block = try parseCodeBlock(state);
+
+            return .{ .while_ = .{
+                .condition = condition,
+                .block = block,
+            } };
+        },
         else => return error.ParseFailed,
     }
 }
@@ -331,7 +363,7 @@ pub fn parseExpr(state: State, level: u8) !*Expression {
         const op = state.lexer.peekToken();
         switch (level) {
             0 => switch (op) {
-                .equal => {},
+                .equal, .less, .more => {},
                 else => break,
             },
             1 => switch (op) {
@@ -356,6 +388,8 @@ pub fn parseExpr(state: State, level: u8) !*Expression {
                 .mul => .mul,
                 .div => .div,
                 .equal => .equal,
+                .less => .less,
+                .more => .more,
                 else => unreachable,
             },
             .left = left,
