@@ -255,14 +255,23 @@ pub fn compileAst(state: State, ast: *const parser.FileScope) !FileScope {
             .blocks = .empty,
             .name = ast_func.name,
         };
+        errdefer func.deinit(gpa);
+
+        var ident_map: IdentMap = .empty;
+        defer ident_map.deinit(gpa);
+
+        try ident_map.ensureUnusedCapacity(gpa, ast_func.params.len);
+        for (ast_func.params, 0..) |param, arg_id| {
+            ident_map.putAssumeCapacity(param.get(state.lexer), .fromArg(@intCast(arg_id)));
+        }
 
         try func.blocks.append(gpa, .{
-            .arg_count = 0,
+            .arg_count = @intCast(ast_func.params.len),
             .insts = .empty,
             .terminator = .none,
         });
 
-        const compiled_block_result = try compileCodeBlock(state, &func, &.empty, ast_func.block, 0);
+        const compiled_block_result = try compileCodeBlock(state, &func, &ident_map, ast_func.block, 0);
         switch (compiled_block_result) {
             .returned => {},
             .continued => |continued| {

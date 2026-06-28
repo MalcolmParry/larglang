@@ -1,13 +1,12 @@
-fn main {
+fn main(x, y) {
 	z = 5;
-	x = 500;
 	
-	if (21 == 8) {
+	if (y == 8) {
 		x = x + 7;
 	} else {
 		x = x - 3;
 	}
 
-	y = x + (12 - 3) * 6 / 3;
-	return y;
+	z = x + (12 - 3) * 6 / 3;
+	return z;
 }

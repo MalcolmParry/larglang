@@ -25,6 +25,7 @@ pub const Token = union(enum) {
     rparen,
     lbrace,
     rbrace,
+    comma,
     colon,
     assign,
     semicolon,
@@ -99,6 +100,7 @@ pub fn popToken(lexer: *Lexer) Token {
             ')' => .rparen,
             '{' => .lbrace,
             '}' => .rbrace,
+            ',' => .comma,
             ':' => .colon,
             '=' => if (lexer.peekChar(1) == '=') {
                 lexer.head += 2;

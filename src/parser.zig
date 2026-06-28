@@ -26,6 +26,7 @@ pub const FileScope = struct {
 
 pub const Func = struct {
     name: Slice,
+    params: []const Slice,
     block: CodeBlock,
 
     pub fn format(func: Func, lexer: *const Lexer) Formatter {
@@ -37,8 +38,14 @@ pub const Func = struct {
         lexer: *const Lexer,
 
         pub fn format(this: @This(), writer: *std.Io.Writer) std.Io.Writer.Error!void {
-            try writer.print("func '{s}':\n{f}", .{
-                this.func.name.get(this.lexer),
+            try writer.print("func '{s}' (", .{this.func.name.get(this.lexer)});
+
+            for (this.func.params, 0..) |param, i| {
+                try writer.print("{s}", .{param.get(this.lexer)});
+                if (i != this.func.params.len - 1) try writer.print(", ", .{});
+            }
+
+            try writer.print("):\n{f}", .{
                 CodeBlock.Formatter{
                     .block = this.func.block,
                     .indent = 1,
@@ -222,11 +229,33 @@ pub fn parseFunc(state: State) !Func {
     _ = try popExpectToken(state, .func);
     const name_token = state.lexer.popToken();
     try expectToken(name_token, .ident);
+
+    const params = if (state.lexer.peekToken() == .lparen) blk: {
+        _ = state.lexer.popToken();
+
+        var params: std.ArrayList(Slice) = .empty;
+        defer params.deinit(state.gpa);
+
+        while (true) {
+            const ident = try popExpectToken(state, .ident);
+            try params.append(state.gpa, ident.ident);
+
+            switch (state.lexer.popToken()) {
+                .comma => {},
+                .rparen => break,
+                else => return error.ParseFailed,
+            }
+        }
+
+        break :blk try state.arena.dupe(Slice, params.items);
+    } else &.{};
+
     const block = try parseCodeBlock(state);
 
     return .{
         .name = name_token.ident,
         .block = block,
+        .params = params,
     };
 }
 
