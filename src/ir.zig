@@ -650,13 +650,122 @@ pub fn remapTerminatorValRefs(term: *Terminator, val_map: *const std.hash_map.Au
     }
 }
 
+pub fn remapValueRef(block: *Block, old: ValueRef, new: ValueRef) void {
+    for (block.insts.items) |*inst| {
+        switch (inst.tag.getDataKind()) {
+            .none, .imm => {},
+            .bin => {
+                const bin = &inst.data.bin;
+                if (bin.left == old) bin.left = new;
+                if (bin.right == old) bin.right = new;
+            },
+        }
+    }
+
+    switch (block.terminator) {
+        .none, .dead => unreachable,
+        .ret => |*ret| {
+            if (ret.* == old) ret.* = new;
+        },
+        .jmp => |jmp| {
+            for (jmp.args.items) |*ref| {
+                if (ref.* == old) ref.* = new;
+            }
+        },
+        .branch => |*branch| {
+            if (branch.condition == old) branch.condition = new;
+
+            for (branch.true_jmp.args.items) |*ref| {
+                if (ref.* == old) ref.* = new;
+            }
+
+            for (branch.false_jmp.args.items) |*ref| {
+                if (ref.* == old) ref.* = new;
+            }
+        },
+    }
+}
+
+pub fn removeUnusedArgs(alloc: std.mem.Allocator, func: *Func, block_id: BlockId) !bool {
+    // args to the first block are function parameters and cant be removed
+    if (block_id == 0) return false;
+
+    var dirty: bool = false;
+    const block = &func.blocks.items[block_id];
+    var unused: std.DynamicBitSetUnmanaged = try .initFull(alloc, block.arg_count);
+    defer unused.deinit(alloc);
+
+    for (block.insts.items) |inst| {
+        switch (inst.tag.getDataKind()) {
+            .none, .imm => {},
+            .bin => {
+                const bin = inst.data.bin;
+                markArgRefUsed(&unused, bin.left);
+                markArgRefUsed(&unused, bin.right);
+            },
+        }
+    }
+
+    switch (block.terminator) {
+        .none, .dead => unreachable,
+        .ret => |ref| markArgRefUsed(&unused, ref),
+        .jmp => |jmp| {
+            for (jmp.args.items) |ref| markArgRefUsed(&unused, ref);
+        },
+        .branch => |branch| {
+            markArgRefUsed(&unused, branch.condition);
+            for (branch.true_jmp.args.items) |ref| markArgRefUsed(&unused, ref);
+            for (branch.false_jmp.args.items) |ref| markArgRefUsed(&unused, ref);
+        },
+    }
+
+    while (unused.findFirstSet()) |arg_id| {
+        dirty = true;
+        unused.unset(arg_id);
+        // const ref: ValueRef = .fromArg(@intCast(arg_id));
+
+        block.arg_count -= 1;
+        const last = block.arg_count;
+        if (arg_id != last) {
+            unused.setValue(arg_id, unused.isSet(last));
+            unused.unset(last);
+            remapValueRef(block, .fromArg(@intCast(last)), .fromArg(@intCast(arg_id)));
+        }
+
+        for (func.blocks.items) |*other| {
+            switch (other.terminator) {
+                .none => unreachable,
+                .dead, .ret => {},
+                .jmp => |*jmp| {
+                    if (jmp.block_id == block_id)
+                        _ = jmp.args.swapRemove(arg_id);
+                },
+                .branch => |*branch| {
+                    if (branch.true_jmp.block_id == block_id)
+                        _ = branch.true_jmp.args.swapRemove(arg_id);
+
+                    if (branch.false_jmp.block_id == block_id)
+                        _ = branch.false_jmp.args.swapRemove(arg_id);
+                },
+            }
+        }
+    }
+
+    return dirty;
+}
+
+fn markArgRefUsed(unused: *std.DynamicBitSetUnmanaged, ref: ValueRef) void {
+    if (ref.tag == .arg) unused.unset(ref.data);
+}
+
 pub fn optimize(alloc: std.mem.Allocator, func: *Func) !void {
     while (true) {
         var dirty: bool = false;
 
-        for (func.blocks.items) |*block| {
+        for (func.blocks.items, 0..) |*block, block_id| {
             if (block.isDead()) continue;
 
+            dirty = try removeUnusedArgs(alloc, func, @intCast(block_id)) or dirty;
             dirty = try foldConstants(alloc, block) or dirty;
             dirty = try killUnusedInstructions(alloc, block) or dirty;
         }
