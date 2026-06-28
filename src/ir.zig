@@ -44,6 +44,7 @@ pub const Func = struct {
     }
 };
 
+pub const BlockId = u32;
 pub const Block = struct {
     arg_count: u32,
     insts: std.ArrayList(Inst),
@@ -152,7 +153,7 @@ pub const Terminator = union(enum) {
 pub const ValueRef = packed struct(u32) {
     /// instruction index when tag = .inst
     /// arg index when tag = .arg
-    data: u31,
+    data: InstRef,
     tag: Tag,
 
     pub const Tag = enum(u1) {
@@ -176,6 +177,7 @@ pub const ValueRef = packed struct(u32) {
     }
 };
 
+pub const InstRef = u31;
 pub const Inst = struct {
     tag: Tag,
     data: Data,
@@ -284,7 +286,7 @@ pub const CompileCodeBlockResult = union(enum) {
     continued: Continued,
 
     pub const Continued = struct {
-        current_block_id: u32,
+        current_block_id: BlockId,
         args: []ValueRef,
     };
 };
@@ -655,4 +657,122 @@ pub fn optimize(alloc: std.mem.Allocator, func: *Func) !void {
 
         if (!dirty) break;
     }
+}
+
+pub fn clean(alloc: std.mem.Allocator, func: *Func) !void {
+    // remove dead blocks
+    var block_id: BlockId = 0;
+    while (block_id < func.blocks.items.len) {
+        const block = &func.blocks.items[block_id];
+        if (!block.isDead()) {
+            block_id += 1;
+            continue;
+        }
+
+        const last_id: BlockId = @intCast(func.blocks.items.len - 1);
+        _ = func.blocks.swapRemove(block_id);
+        if (block_id == last_id) continue;
+
+        for (func.blocks.items) |*b| {
+            switch (b.terminator) {
+                .none => unreachable,
+                .dead, .ret => {},
+                .jmp => |*jmp| {
+                    if (jmp.block_id == last_id) jmp.block_id = block_id;
+                },
+                .branch => |*branch| {
+                    if (branch.true_jmp.block_id == last_id) branch.true_jmp.block_id = block_id;
+                    if (branch.false_jmp.block_id == last_id) branch.false_jmp.block_id = block_id;
+                },
+            }
+        }
+    }
+
+    // remove no ops
+    for (func.blocks.items) |*block| {
+        var old_to_new_refs: std.AutoHashMapUnmanaged(ValueRef, ValueRef) = .empty;
+        defer old_to_new_refs.deinit(alloc);
+
+        var old_insts = block.insts;
+        defer old_insts.deinit(alloc);
+
+        block.insts = try .initCapacity(alloc, old_insts.items.len);
+
+        for (old_insts.items, 0..) |old_inst, old_inst_id| {
+            const old_ref: ValueRef = .fromInst(@intCast(old_inst_id));
+
+            switch (old_inst.tag) {
+                .no_op => {},
+                .imm => {
+                    const new_ref = try block.appendInst(alloc, old_inst);
+                    try old_to_new_refs.put(alloc, old_ref, new_ref);
+                },
+                .add, .sub, .mul, .div, .equal => {
+                    const old_bin = old_inst.data.bin;
+                    const new_ref = try block.appendInst(alloc, .bin(
+                        old_inst.tag,
+                        old_to_new_refs.get(old_bin.left) orelse unreachable,
+                        old_to_new_refs.get(old_bin.right) orelse unreachable,
+                    ));
+
+                    try old_to_new_refs.put(alloc, old_ref, new_ref);
+                },
+            }
+        }
+
+        switch (block.terminator) {
+            .none, .dead => unreachable,
+            .ret => |*ret| ret.* = old_to_new_refs.get(ret.*) orelse unreachable,
+            .jmp => |jmp| {
+                for (jmp.args.items) |*arg| arg.* = old_to_new_refs.get(arg.*) orelse unreachable;
+            },
+            .branch => |*branch| {
+                branch.condition = old_to_new_refs.get(branch.condition) orelse unreachable;
+                for (branch.true_jmp.args.items) |*arg| arg.* = old_to_new_refs.get(arg.*) orelse unreachable;
+                for (branch.false_jmp.args.items) |*arg| arg.* = old_to_new_refs.get(arg.*) orelse unreachable;
+            },
+        }
+    }
+}
+
+pub fn validate(func: Func) void {
+    for (func.blocks.items) |block| {
+        for (block.insts.items, 0..) |inst, inst_id| {
+            switch (inst.tag) {
+                .no_op => unreachable,
+                .imm => {},
+                .add, .sub, .mul, .div, .equal => {
+                    const bin = inst.data.bin;
+                    validateRef(block, bin.left, @intCast(inst_id));
+                    validateRef(block, bin.right, @intCast(inst_id));
+                },
+            }
+        }
+
+        switch (block.terminator) {
+            .none, .dead => unreachable,
+            .ret => |ref| validateRef(block, ref, null),
+            .jmp => |jmp| validateJmp(func, block, jmp),
+            .branch => |branch| {
+                validateRef(block, branch.condition, null);
+                validateJmp(func, block, branch.true_jmp);
+                validateJmp(func, block, branch.false_jmp);
+            },
+        }
+    }
+}
+
+fn validateRef(block: Block, ref: ValueRef, maybe_current_inst_ref: ?InstRef) void {
+    const inst_ref = maybe_current_inst_ref orelse block.insts.items.len;
+
+    switch (ref.tag) {
+        .inst => std.debug.assert(ref.data < inst_ref),
+        .arg => std.debug.assert(ref.data < block.arg_count),
+    }
+}
+
+fn validateJmp(func: Func, current: Block, jmp: Terminator.Jmp) void {
+    std.debug.assert(jmp.block_id < func.blocks.items.len);
+    std.debug.assert(jmp.args.items.len == func.blocks.items[jmp.block_id].arg_count);
+    for (jmp.args.items) |arg| validateRef(current, arg, null);
 }

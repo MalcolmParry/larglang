@@ -48,10 +48,13 @@ pub fn main(init: std.process.Init) !void {
         });
 
         try ir_gen.optimize(alloc, func);
+        try ir_gen.clean(alloc, func);
 
         std.log.info("\nfn {s}:\n{f}", .{
             func.name.get(&lexer),
             func,
         });
+
+        ir_gen.validate(func.*);
     }
 }
