@@ -49,6 +49,7 @@ pub fn main(init: std.process.Init) !void {
         std.log.info("{any}", .{func.imms.items});
 
         try ir_gen.optimize(alloc, func);
+        std.log.info("{any}", .{func.imms.items});
         try ir_gen.clean(alloc, func);
 
         std.log.info("\nfn {s}:\n{f}", .{

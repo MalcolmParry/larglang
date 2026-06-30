@@ -65,6 +65,17 @@ pub const Block = struct {
         return block.terminator == .dead;
     }
 
+    pub fn isEmpty(block: Block) bool {
+        var empty: bool = true;
+
+        for (block.insts.items) |inst| {
+            if (inst.tag != .no_op)
+                empty = false;
+        }
+
+        return empty;
+    }
+
     pub fn appendInst(block: *Block, alloc: std.mem.Allocator, inst: Inst) !ValueRef {
         try block.insts.append(alloc, inst);
         return .fromInst(@intCast(block.insts.items.len - 1));
@@ -128,6 +139,7 @@ pub const ValueRef = packed struct(u16) {
     }
 };
 
+pub const ImmRef = u14;
 pub const InstRef = u14;
 
 /// instructions are ordered except for .imm
@@ -785,16 +797,16 @@ pub fn removeUnusedArgs(alloc: std.mem.Allocator, func: *Func, block_id: BlockId
 const ArgImmState = union(enum) {
     unknown,
     overdefined,
-    imm: u64,
+    imm: ImmRef,
 
-    fn merge(a: ArgImmState, b: ArgImmState) ArgImmState {
+    fn merge(a: ArgImmState, b: ArgImmState, func: *const Func) ArgImmState {
         return switch (a) {
             .unknown => b,
             .overdefined => .overdefined,
             .imm => |x| switch (b) {
                 .unknown => a,
                 .overdefined => .overdefined,
-                .imm => |y| if (x == y) a else .overdefined,
+                .imm => |y| if (func.imms.items[x] == func.imms.items[y]) a else .overdefined,
             },
         };
     }
@@ -808,12 +820,12 @@ fn setArgImmStateFromJmp(func: *const Func, jmp: Terminator.Jmp, pred_block_id: 
         const local_state: ArgImmState = switch (ref.tag) {
             .arg => arg_imm_states[pred_block_id][ref.data],
             .inst => .overdefined,
-            .imm => .{ .imm = func.imms.items[ref.data] },
+            .imm => .{ .imm = ref.data },
         };
 
         const state = &block_arg_imm_states[arg_id];
         const old = state.*;
-        state.* = state.merge(local_state);
+        state.* = state.merge(local_state, func);
 
         dirty = dirty or (std.meta.activeTag(state.*) != old);
     }
@@ -854,16 +866,63 @@ pub fn forwardImmediates(alloc: std.mem.Allocator, func: *Func) !bool {
 
     for (func.blocks.items, imm_states) |*block, block_imm_states| {
         for (block_imm_states, 0..) |imm_state, arg_id| {
-            const val = if (imm_state == .imm) imm_state.imm else continue;
+            const imm_ref = if (imm_state == .imm) imm_state.imm else continue;
             remapValueRef(
                 block,
                 .fromArg(@intCast(arg_id)),
-                try func.appendImm(alloc, val),
+                .{ .tag = .imm, .data = imm_ref },
             );
         }
     }
 
     return dirty;
+}
+
+fn bypassJmpsToEmptyBlocks(alloc: std.mem.Allocator, func: *Func) !bool {
+    var dirty: bool = false;
+
+    for (func.blocks.items, 0..) |*succ, succ_id| {
+        if (succ.isDead()) continue;
+        if (!succ.isEmpty()) continue;
+        if (succ.terminator != .jmp) continue;
+
+        for (func.blocks.items) |*pred| {
+            switch (pred.terminator) {
+                .none => unreachable,
+                .dead, .ret => {},
+                .jmp => |*jmp| {
+                    dirty = try remapJmpToEmptyBlock(alloc, jmp, succ.*, succ_id) or dirty;
+                },
+                .branch => |*branch| {
+                    dirty = try remapJmpToEmptyBlock(alloc, &branch.true_jmp, succ.*, succ_id) or dirty;
+                    dirty = try remapJmpToEmptyBlock(alloc, &branch.false_jmp, succ.*, succ_id) or dirty;
+                },
+            }
+        }
+    }
+
+    return dirty;
+}
+
+fn remapJmpToEmptyBlock(alloc: std.mem.Allocator, pred_jmp: *Terminator.Jmp, succ: Block, succ_id: usize) !bool {
+    if (succ_id != pred_jmp.block_id) return false;
+    std.debug.assert(succ.terminator == .jmp);
+
+    const succ_jmp = succ.terminator.jmp;
+    const new_args = try alloc.alloc(ValueRef, succ_jmp.args.items.len);
+    errdefer alloc.free(new_args);
+
+    for (new_args, succ_jmp.args.items) |*new, succ_arg| {
+        new.* = switch (succ_arg.tag) {
+            .imm, .inst => succ_arg,
+            .arg => pred_jmp.args.items[succ_arg.data],
+        };
+    }
+
+    pred_jmp.args.deinit(alloc);
+    pred_jmp.args = .fromOwnedSlice(new_args);
+    pred_jmp.block_id = succ_jmp.block_id;
+    return true;
 }
 
 fn markArgRefUsed(unused: *std.DynamicBitSetUnmanaged, ref: ValueRef) void {
@@ -885,6 +944,7 @@ pub fn optimize(alloc: std.mem.Allocator, func: *Func) !void {
         dirty = try forwardImmediates(alloc, func) or dirty;
         dirty = try mergeBlocks(alloc, func) or dirty;
         dirty = try killUnreachableBlocks(alloc, func) or dirty;
+        dirty = try bypassJmpsToEmptyBlocks(alloc, func) or dirty;
 
         if (!dirty) break;
     }

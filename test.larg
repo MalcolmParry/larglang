@@ -1,19 +1,23 @@
-// fn main(x, y) {
-//     a = 1;
-//     b = 2;
-// 
-//     if (2 == 0) {
-//         a = 10;
-//         b = 20;
-//     }
-// 
-//     return a + b;
-// }
-// 
+fn main(x, y) {
+    a = 1;
+    b = 2;
+
+    if (2 == 0) {
+        a = 10;
+        b = 20;
+    }
+
+	if (x) {
+		b = b + 32;
+	}
+
+    return a + b;
+}
+
 // fn test1(x) {
 //     return ((x + 0) * 1) - 0;
 // }
-// 
+
 // fn test2(a, b, c, d) {
 //     if (a == 0) {
 //         b = b + 1;
@@ -29,7 +33,7 @@
 // 
 //     return b + d;
 // }
-//
+
 // fn test3(n) {
 //     i = 0;
 //     sum = 0;
@@ -42,15 +46,15 @@
 //     return sum;
 // }
 
-fn test4(n) {
-    i = 0 + 0;
-    x = 5;
-    y = 0;
-
-    while (i < n) {
-        y = x * 2;
-        i = i + 1;
-    }
-
-    return y;
-}
+// fn test4(n) {
+//     i = 0 + 0;
+//     x = 5;
+//     y = 0;
+// 
+//     while (i < n) {
+//         y = x * 2;
+//         i = i + 1;
+//     }
+// 
+//     return y;
+// }
