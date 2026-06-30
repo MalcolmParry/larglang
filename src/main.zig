@@ -18,45 +18,38 @@ pub fn main(init: std.process.Init) !void {
 
     try src_reader.interface.readSliceAll(src);
 
-    var lexer: Lexer = .{
-        .src = src,
-        .head = 0,
-    };
+    var tokens = try Lexer.getTokens(alloc, src);
+    defer tokens.deinit(alloc);
+    Lexer.dumpTokens(tokens, src);
 
-    // while (true) {
-    //     const token = lexer.popToken();
-    //     std.log.info("{f}", .{token.format(&lexer)});
-    //     if (token == .eof) break;
+    // lexer.head = 0;
+    // const ast = try parser.parse(.{
+    //     .gpa = init.gpa,
+    //     .arena = init.arena.allocator(),
+    //     .lexer = &lexer,
+    // });
+    //
+    // // std.log.info("\n{f}", .{ast.format(&lexer)});
+    //
+    // var ir = try ir_gen.compileAst(.{ .gpa = alloc, .lexer = &lexer }, &ast);
+    // defer ir.deinit(alloc);
+    //
+    // for (ir.funcs.items) |*func| {
+    //     std.log.info("\nfn {s}:\n{f}", .{
+    //         func.name.get(&lexer),
+    //         func,
+    //     });
+    //     std.log.info("{any}", .{func.imms.items});
+    //
+    //     try ir_gen.optimize(alloc, func);
+    //     std.log.info("{any}", .{func.imms.items});
+    //     try ir_gen.clean(alloc, func);
+    //
+    //     std.log.info("\nfn {s}:\n{f}", .{
+    //         func.name.get(&lexer),
+    //         func,
+    //     });
+    //
+    //     ir_gen.validate(func.*);
     // }
-
-    lexer.head = 0;
-    const ast = try parser.parse(.{
-        .gpa = init.gpa,
-        .arena = init.arena.allocator(),
-        .lexer = &lexer,
-    });
-
-    // std.log.info("\n{f}", .{ast.format(&lexer)});
-
-    var ir = try ir_gen.compileAst(.{ .gpa = alloc, .lexer = &lexer }, &ast);
-    defer ir.deinit(alloc);
-
-    for (ir.funcs.items) |*func| {
-        std.log.info("\nfn {s}:\n{f}", .{
-            func.name.get(&lexer),
-            func,
-        });
-        std.log.info("{any}", .{func.imms.items});
-
-        try ir_gen.optimize(alloc, func);
-        std.log.info("{any}", .{func.imms.items});
-        try ir_gen.clean(alloc, func);
-
-        std.log.info("\nfn {s}:\n{f}", .{
-            func.name.get(&lexer),
-            func,
-        });
-
-        ir_gen.validate(func.*);
-    }
 }

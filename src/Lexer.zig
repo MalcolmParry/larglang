@@ -2,176 +2,235 @@ const std = @import("std");
 const Lexer = @This();
 
 src: []const u8,
-head: usize,
+head: u32,
 
-pub const Slice = struct {
+pub const Loc = struct {
     start: u32,
     len: u32,
 
-    pub fn get(slice: Slice, lexer: *const Lexer) []const u8 {
-        return lexer.src[slice.start..][0..slice.len];
+    pub fn get(loc: Loc, src: []const u8) []const u8 {
+        return src[loc.start..][0..loc.len];
     }
 };
 
-pub const Token = union(enum) {
-    pub const Kind = std.meta.Tag(Token);
+pub const TokenList = std.MultiArrayList(Token).Slice;
+pub const Token = struct {
+    kind: Kind,
+    loc: Loc,
 
+    pub const Kind = enum {
+        eof,
+        ident,
+        int,
+
+        lparen,
+        rparen,
+        lbrace,
+        rbrace,
+        comma,
+        semicolon,
+        equal,
+        equal_equal,
+        langle,
+        rangle,
+        plus,
+        minus,
+        asterisk,
+        slash,
+
+        kw_fn,
+        kw_ret,
+        kw_if,
+        kw_else,
+        kw_while,
+
+        err_invalid_char,
+
+        pub fn isError(kind: Kind) bool {
+            return switch (kind) {
+                .err_invalid_char => true,
+                else => false,
+            };
+        }
+    };
+};
+
+const keywords: std.static_string_map.StaticStringMap(Token.Kind) = .initComptime(.{
+    .{ "fn", .kw_fn },
+    .{ "return", .kw_ret },
+    .{ "if", .kw_if },
+    .{ "else", .kw_else },
+    .{ "while", .kw_while },
+});
+
+pub fn getTokens(alloc: std.mem.Allocator, src: []const u8) !TokenList {
+    var tokens: std.MultiArrayList(Token) = .empty;
+    errdefer tokens.deinit(alloc);
+
+    var lexer: Lexer = .{
+        .src = src,
+        .head = 0,
+    };
+
+    while (true) {
+        const token = lexer.nextToken();
+
+        if (token.kind == .eof) break;
+        if (token.kind.isError()) {
+            std.log.err("{s}: {s}", .{
+                @tagName(token.kind),
+                token.loc.get(src),
+            });
+
+            return error.LexerFailed;
+        }
+
+        try tokens.append(alloc, token);
+    }
+
+    return tokens.slice();
+}
+
+pub fn dumpTokens(tokens: TokenList, src: []const u8) void {
+    for (tokens.items(.kind), tokens.items(.loc)) |kind, loc| {
+        std.log.info("{s}: '{s}'", .{
+            @tagName(kind),
+            loc.get(src),
+        });
+    }
+}
+
+const State = enum {
+    start,
     eof,
-    ident: Slice,
-    int: u64,
-
-    // symbols
-    lparen,
-    rparen,
-    lbrace,
-    rbrace,
-    comma,
-    colon,
-    assign,
-    semicolon,
-
-    // bin ops
+    ident,
+    num,
     equal,
-    less,
-    more,
-    add,
-    sub,
-    mul,
-    div,
-
-    // keywords
-    func,
-    ret,
-    if_,
-    else_,
-    while_,
-
-    // errors
-    err_invalid_char: u32,
-    err_overflow: Slice,
-
-    pub fn isError(token: Token) bool {
-        return switch (token) {
-            .err_invalid_char,
-            .err_overflow,
-            => true,
-            else => false,
-        };
-    }
-
-    pub fn format(token: Token, lexer: *const Lexer) Formatter {
-        return .{
-            .lexer = lexer,
-            .token = token,
-        };
-    }
-
-    pub const Formatter = struct {
-        lexer: *const Lexer,
-        token: Token,
-
-        pub fn format(this: @This(), writer: *std.Io.Writer) std.Io.Writer.Error!void {
-            try writer.print("{s}", .{@tagName(this.token)});
-
-            switch (this.token) {
-                .ident => |slice| try writer.print(" {s}", .{slice.get(this.lexer)}),
-                .int => |val| try writer.print(" {}", .{val}),
-                else => {},
-            }
-        }
-    };
+    slash,
+    comment,
 };
 
-pub fn peekToken(lexer: Lexer) Token {
-    var copy = lexer;
-    return copy.popToken();
-}
-
-pub fn popToken(lexer: *Lexer) Token {
-    loop: while (true) {
-        const c = lexer.peekChar(0) orelse return .eof;
-        if (std.ascii.isWhitespace(c)) {
-            lexer.head += 1;
-            continue;
-        }
-
-        if (std.ascii.isAlphabetic(c) or c == '_') return handleIdent(lexer);
-        if (std.ascii.isDigit(c)) return handleInt(lexer);
-
-        const token: Token = switch (c) {
-            '(' => .lparen,
-            ')' => .rparen,
-            '{' => .lbrace,
-            '}' => .rbrace,
-            ',' => .comma,
-            ':' => .colon,
-            '=' => if (lexer.peekChar(1) == '=') {
-                lexer.head += 2;
-                return .equal;
-            } else .assign,
-            '<' => .less,
-            '>' => .more,
-            ';' => .semicolon,
-            '+' => .add,
-            '-' => .sub,
-            '*' => .mul,
-            '/' => if (lexer.peekChar(1) == '/') {
-                while (true) {
-                    const c2 = lexer.peekChar(0);
-                    if (c2 == null or c2.? == '\n') continue :loop;
-                    lexer.head += 1;
-                }
-            } else .div,
-            else => .{ .err_invalid_char = @intCast(lexer.head) },
-        };
-
-        lexer.head += 1;
-        return token;
-    }
-}
-
-fn handleIdent(lexer: *Lexer) Token {
-    const start = lexer.head;
-
-    while (lexer.peekChar(0)) |c| {
-        if (!(std.ascii.isAlphanumeric(c) or c == '_')) break;
-        lexer.head += 1;
-    }
-
-    const ident = lexer.src[start..lexer.head];
-    if (std.mem.eql(u8, ident, "fn")) return .func;
-    if (std.mem.eql(u8, ident, "return")) return .ret;
-    if (std.mem.eql(u8, ident, "if")) return .if_;
-    if (std.mem.eql(u8, ident, "else")) return .else_;
-    if (std.mem.eql(u8, ident, "while")) return .while_;
-
-    return .{ .ident = .{
-        .start = @intCast(start),
-        .len = @intCast(lexer.head - start),
-    } };
-}
-
-fn handleInt(lexer: *Lexer) Token {
-    const start = lexer.head;
-
-    while (lexer.peekChar(0)) |c| {
-        if (!std.ascii.isDigit(c)) break;
-        lexer.head += 1;
-    }
-
-    const src = lexer.src[start..lexer.head];
-    const val = std.fmt.parseInt(u64, src, 10) catch |err| switch (err) {
-        error.InvalidCharacter => unreachable,
-        error.Overflow => return .{ .err_overflow = .{
-            .start = @intCast(start),
-            .len = @intCast(lexer.head - start),
-        } },
+pub fn nextToken(lexer: *Lexer) Token {
+    var result: Token = .{
+        .kind = undefined,
+        .loc = .{
+            .start = undefined,
+            .len = undefined,
+        },
     };
 
-    return .{ .int = val };
+    state: switch (State.start) {
+        .start => {
+            result.loc.start = lexer.head;
+
+            const kind: Token.Kind = switch (lexer.peekChar(0) orelse continue :state .eof) {
+                'a'...'z', 'A'...'Z', '_' => continue :state .ident,
+                '0'...'9' => continue :state .num,
+                '(' => .lparen,
+                ')' => .rparen,
+                '{' => .lbrace,
+                '}' => .rbrace,
+                ',' => .comma,
+                ';' => .semicolon,
+                '=' => continue :state .equal,
+                '<' => .rangle,
+                '>' => .langle,
+                '+' => .plus,
+                '-' => .minus,
+                '*' => .asterisk,
+                '/' => continue :state .slash,
+                ' ', '\n', '\r', '\t' => {
+                    lexer.head += 1;
+                    continue :state .start;
+                },
+                else => .err_invalid_char,
+            };
+
+            result.kind = kind;
+            result.loc.len = 1;
+            lexer.head += 1;
+            return result;
+        },
+        .eof => {
+            return .{
+                .kind = .eof,
+                .loc = .{
+                    .start = @intCast(lexer.src.len - 1),
+                    .len = 1,
+                },
+            };
+        },
+        .ident => {
+            lexer.head += 1;
+
+            switch (lexer.peekChar(0) orelse 0) {
+                'a'...'z', 'A'...'Z', '_', '0'...'9' => continue :state .ident,
+                else => {
+                    const str = lexer.src[result.loc.start..lexer.head];
+
+                    result.kind = if (keywords.get(str)) |kind| kind else .ident;
+                    result.loc.len = lexer.head - result.loc.start;
+                    return result;
+                },
+            }
+        },
+        .num => {
+            lexer.head += 1;
+
+            switch (lexer.peekChar(0) orelse 0) {
+                '0'...'9' => continue :state .num,
+                else => {
+                    result.kind = .int;
+                    result.loc.len = lexer.head - result.loc.start;
+                    return result;
+                },
+            }
+        },
+        .equal => {
+            lexer.head += 1;
+
+            switch (lexer.peekChar(0) orelse 0) {
+                '=' => {
+                    result.kind = .equal_equal;
+                    result.loc.len = 2;
+                    lexer.head += 1;
+                    return result;
+                },
+                else => {
+                    result.kind = .equal;
+                    result.loc.len = 1;
+                    return result;
+                },
+            }
+        },
+        .slash => {
+            lexer.head += 1;
+
+            switch (lexer.peekChar(0) orelse 0) {
+                '/' => continue :state .comment,
+                else => {
+                    result.kind = .slash;
+                    result.loc.len = 1;
+                    return result;
+                },
+            }
+        },
+        .comment => {
+            lexer.head += 1;
+
+            switch (lexer.peekChar(0) orelse 0) {
+                0 => continue :state .eof,
+                '\n' => {
+                    lexer.head += 1;
+                    continue :state .start;
+                },
+                else => continue :state .comment,
+            }
+        },
+    }
 }
 
-fn peekChar(lexer: *Lexer, offset: isize) ?u8 {
+fn peekChar(lexer: *const Lexer, offset: isize) ?u8 {
     const pos: isize = @as(isize, @intCast(lexer.head)) + offset;
     if (pos < 0 or pos >= lexer.src.len) return null;
     return lexer.src[@as(usize, @intCast(pos))];
