@@ -20,27 +20,24 @@ pub const FileScope = struct {
 pub const Func = struct {
     name: Slice,
     blocks: std.ArrayList(Block),
+    imms: std.ArrayList(u64),
 
     pub fn deinit(func: *Func, alloc: std.mem.Allocator) void {
         for (func.blocks.items) |*block| block.deinit(alloc);
         func.blocks.deinit(alloc);
+        func.imms.deinit(alloc);
     }
 
-    pub fn format(this: @This(), writer: *std.Io.Writer) std.Io.Writer.Error!void {
-        for (0.., this.blocks.items) |block_id, block| {
-            try writer.print("@{}(", .{block_id});
+    pub fn appendImm(func: *Func, alloc: std.mem.Allocator, val: u64) !ValueRef {
+        try func.imms.append(alloc, val);
+        return .{
+            .tag = .imm,
+            .data = @intCast(func.imms.items.len - 1),
+        };
+    }
 
-            for (0..block.arg_count) |arg_id| {
-                try writer.print("%{}", .{arg_id});
-
-                if (arg_id != block.arg_count - 1)
-                    try writer.print(", ", .{});
-            }
-
-            try writer.print("):\n{f}\n", .{
-                block,
-            });
-        }
+    pub fn format(func: Func, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+        try printFunc(writer, func);
     }
 };
 
@@ -72,33 +69,6 @@ pub const Block = struct {
         try block.insts.append(alloc, inst);
         return .fromInst(@intCast(block.insts.items.len - 1));
     }
-
-    pub fn format(this: @This(), writer: *std.Io.Writer) std.Io.Writer.Error!void {
-        for (this.insts.items, 0..) |inst, inst_id| {
-            switch (inst.tag) {
-                .no_op => try writer.print("${} = noop\n", .{inst_id}),
-                .imm => try writer.print("${} = {}\n", .{ inst_id, inst.data.imm }),
-                .add, .sub, .mul, .div, .equal, .less, .more => try writer.print("${} = {s} {f}, {f}\n", .{
-                    inst_id,
-                    @tagName(inst.tag),
-                    inst.data.bin.left,
-                    inst.data.bin.right,
-                }),
-            }
-        }
-
-        switch (this.terminator) {
-            .none => try writer.print("block under construction\n", .{}),
-            .dead => try writer.print("dead block\n", .{}),
-            .ret => |val| try writer.print("ret {f}\n", .{val}),
-            .jmp => |jmp| try writer.print("jmp {f}\n", .{jmp}),
-            .branch => |branch| try writer.print("branch {f} ? {f} : {f}\n", .{
-                branch.condition,
-                branch.true_jmp,
-                branch.false_jmp,
-            }),
-        }
-    }
 };
 
 pub const Terminator = union(enum) {
@@ -128,19 +98,6 @@ pub const Terminator = union(enum) {
         pub fn deinit(jmp: *Jmp, alloc: std.mem.Allocator) void {
             jmp.args.deinit(alloc);
         }
-
-        pub fn format(this: @This(), writer: *std.Io.Writer) std.Io.Writer.Error!void {
-            try writer.print("@{}(", .{this.block_id});
-
-            for (this.args.items, 0..) |arg, i| {
-                try writer.print("{f}", .{arg});
-
-                if (i != this.args.items.len - 1)
-                    try writer.print(", ", .{});
-            }
-
-            try writer.print(")", .{});
-        }
     };
 
     pub const Branch = struct {
@@ -150,41 +107,36 @@ pub const Terminator = union(enum) {
     };
 };
 
-pub const ValueRef = packed struct(u32) {
+pub const ValueRef = packed struct(u16) {
     /// instruction index when tag = .inst
     /// arg index when tag = .arg
-    data: InstRef,
+    data: u14,
     tag: Tag,
 
-    pub const Tag = enum(u1) {
+    pub const Tag = enum(u2) {
         inst,
         arg,
+        imm,
     };
 
-    pub fn format(this: @This(), writer: *std.Io.Writer) std.Io.Writer.Error!void {
-        switch (this.tag) {
-            .inst => try writer.print("${}", .{this.data}),
-            .arg => try writer.print("%{}", .{this.data}),
-        }
-    }
-
-    pub fn fromInst(inst_id: u31) ValueRef {
+    pub fn fromInst(inst_id: u14) ValueRef {
         return .{ .tag = .inst, .data = inst_id };
     }
 
-    pub fn fromArg(arg_id: u31) ValueRef {
+    pub fn fromArg(arg_id: u14) ValueRef {
         return .{ .tag = .arg, .data = arg_id };
     }
 };
 
-pub const InstRef = u31;
+pub const InstRef = u14;
+
+/// instructions are ordered except for .imm
 pub const Inst = struct {
     tag: Tag,
     data: Data,
 
     pub const Tag = enum {
         no_op,
-        imm,
         add,
         sub,
         mul,
@@ -196,7 +148,6 @@ pub const Inst = struct {
         pub fn getDataKind(tag: Tag) Data.Kind {
             return switch (tag) {
                 .no_op => .none,
-                .imm => .imm,
                 .add, .sub, .mul, .div, .equal, .less, .more => .bin,
             };
         }
@@ -208,12 +159,10 @@ pub const Inst = struct {
     };
 
     pub const Data = union {
-        imm: u64,
         bin: BinOp,
 
         pub const Kind = enum {
             none,
-            imm,
             bin,
         };
     };
@@ -224,10 +173,6 @@ pub const Inst = struct {
     };
 
     pub const noop: Inst = .{ .tag = .no_op, .data = undefined };
-    pub fn imm(val: u64) Inst {
-        return .{ .tag = .imm, .data = .{ .imm = val } };
-    }
-
     pub fn bin(tag: Tag, left: ValueRef, right: ValueRef) Inst {
         std.debug.assert(tag.getDataKind() == .bin);
         return .{
@@ -255,6 +200,7 @@ pub fn compileAst(state: State, ast: *const parser.FileScope) !FileScope {
     for (ast.funcs) |ast_func| {
         var func: Func = .{
             .blocks = .empty,
+            .imms = .empty,
             .name = ast_func.name,
         };
         errdefer func.deinit(gpa);
@@ -281,7 +227,7 @@ pub fn compileAst(state: State, ast: *const parser.FileScope) !FileScope {
                 const block = &func.blocks.items[continued.current_block_id];
 
                 block.terminator = .{
-                    .ret = try block.appendInst(gpa, .imm(0)),
+                    .ret = try func.appendImm(gpa, 0),
                 };
             },
         }
@@ -311,16 +257,16 @@ pub fn compileCodeBlock(state: State, func: *Func, ident_map: *const IdentMap, a
     for (ast_block.statements) |statement| {
         switch (statement) {
             .assign => |assign| {
-                const val = try compileExpr(state, &func.blocks.items[block_id], &new_ident_map, assign.expr);
+                const val = try compileExpr(state, func, &func.blocks.items[block_id], &new_ident_map, assign.expr);
                 try new_ident_map.put(gpa, assign.ident.get(state.lexer), val);
             },
             .ret => |expr| {
-                const val = try compileExpr(state, &func.blocks.items[block_id], &new_ident_map, expr);
+                const val = try compileExpr(state, func, &func.blocks.items[block_id], &new_ident_map, expr);
                 func.blocks.items[block_id].terminator = .{ .ret = val };
                 return .returned;
             },
             .if_ => |if_| {
-                const condition = try compileExpr(state, &func.blocks.items[block_id], &new_ident_map, if_.condition);
+                const condition = try compileExpr(state, func, &func.blocks.items[block_id], &new_ident_map, if_.condition);
                 const args: std.ArrayList(ValueRef) = .fromOwnedSlice(try gpa.dupe(ValueRef, new_ident_map.values()));
 
                 for (new_ident_map.values(), 0..) |*val, i| {
@@ -404,7 +350,7 @@ pub fn compileCodeBlock(state: State, func: *Func, ident_map: *const IdentMap, a
                     .insts = .empty,
                     .terminator = .none,
                 });
-                const cond_val_ref = try compileExpr(state, &func.blocks.items[cond_id], &new_ident_map, while_.condition);
+                const cond_val_ref = try compileExpr(state, func, &func.blocks.items[cond_id], &new_ident_map, while_.condition);
 
                 const body_id: BlockId = @intCast(func.blocks.items.len);
                 try func.blocks.append(gpa, .{
@@ -472,16 +418,16 @@ pub fn compileCodeBlock(state: State, func: *Func, ident_map: *const IdentMap, a
     } };
 }
 
-pub fn compileExpr(state: State, block: *Block, ident_map: *IdentMap, expr: *const parser.Expression) !ValueRef {
+pub fn compileExpr(state: State, func: *Func, block: *Block, ident_map: *IdentMap, expr: *const parser.Expression) !ValueRef {
     const gpa = state.gpa;
 
     switch (expr.*) {
         .int_lit => |val| {
-            return block.appendInst(gpa, .imm(val));
+            return func.appendImm(gpa, val);
         },
         .bin => |bin| {
-            const left_ref = try compileExpr(state, block, ident_map, bin.left);
-            const right_ref = try compileExpr(state, block, ident_map, bin.right);
+            const left_ref = try compileExpr(state, func, block, ident_map, bin.left);
+            const right_ref = try compileExpr(state, func, block, ident_map, bin.right);
 
             const tag: Inst.Tag = switch (bin.op) {
                 .add => .add,
@@ -501,15 +447,15 @@ pub fn compileExpr(state: State, block: *Block, ident_map: *IdentMap, expr: *con
     }
 }
 
-pub fn foldConstants(alloc: std.mem.Allocator, block: *Block) !bool {
+pub fn foldConstants(alloc: std.mem.Allocator, func: *Func, block: *Block) !bool {
     var dirty: bool = false;
 
-    for (block.insts.items) |*inst| {
+    for (block.insts.items, 0..) |*inst, inst_id| {
         switch (inst.tag) {
             .add, .sub, .mul, .div, .equal, .less, .more => {
                 const bin = inst.data.bin;
-                const left = getImmediate(block, bin.left) orelse continue;
-                const right = getImmediate(block, bin.right) orelse continue;
+                const left = getImmediate(func, bin.left) orelse continue;
+                const right = getImmediate(func, bin.right) orelse continue;
 
                 const result: u64 = switch (inst.tag) {
                     .add => left +% right,
@@ -523,7 +469,12 @@ pub fn foldConstants(alloc: std.mem.Allocator, block: *Block) !bool {
                 };
 
                 dirty = true;
-                inst.* = .imm(result);
+                inst.* = .noop;
+                remapValueRef(
+                    block,
+                    .fromInst(@intCast(inst_id)),
+                    try func.appendImm(alloc, result),
+                );
             },
             else => {},
         }
@@ -532,7 +483,7 @@ pub fn foldConstants(alloc: std.mem.Allocator, block: *Block) !bool {
     blk: switch (block.terminator) {
         .none, .dead, .jmp, .ret => {},
         .branch => |*branch| {
-            const val = getImmediate(block, branch.condition) orelse break :blk;
+            const val = getImmediate(func, branch.condition) orelse break :blk;
             const jmp = if (val != 0) branch.true_jmp else branch.false_jmp;
             const other = if (val != 0) &branch.false_jmp else &branch.true_jmp;
 
@@ -545,18 +496,14 @@ pub fn foldConstants(alloc: std.mem.Allocator, block: *Block) !bool {
     return dirty;
 }
 
-pub fn getImmediate(block: *const Block, ref: ValueRef) ?u64 {
+pub fn getImmediate(func: *const Func, ref: ValueRef) ?u64 {
     return switch (ref.tag) {
-        .arg => null,
-        .inst => {
-            const inst = block.insts.items[ref.data];
-            if (inst.tag == .imm) return inst.data.imm;
-            return null;
-        },
+        .inst, .arg => null,
+        .imm => func.imms.items[ref.data],
     };
 }
 
-pub fn killUnusedInstructions(alloc: std.mem.Allocator, block: *Block) !bool {
+pub fn killUnusedInsts(alloc: std.mem.Allocator, block: *Block) !bool {
     var dirty: bool = false;
 
     var unused: std.DynamicBitSetUnmanaged = try .initFull(alloc, block.insts.items.len);
@@ -564,7 +511,7 @@ pub fn killUnusedInstructions(alloc: std.mem.Allocator, block: *Block) !bool {
 
     for (block.insts.items) |inst| {
         switch (inst.tag.getDataKind()) {
-            .none, .imm => {},
+            .none => {},
             .bin => {
                 const bin = inst.data.bin;
                 markValueRefUsed(&unused, bin.left);
@@ -696,11 +643,11 @@ pub fn appendAndRemapInsts(alloc: std.mem.Allocator, src: []const Inst, dst: *Bl
         const old: ValueRef = .fromInst(@intCast(inst_id));
 
         const new = switch (inst.tag.getDataKind()) {
-            .none, .imm => try dst.appendInst(alloc, inst),
+            .none => try dst.appendInst(alloc, inst),
             .bin => blk: {
                 const bin = inst.data.bin;
-                const new_left = val_map.get(bin.left) orelse unreachable;
-                const new_right = val_map.get(bin.right) orelse unreachable;
+                const new_left = getValRefFromMap(val_map, bin.left);
+                const new_right = getValRefFromMap(val_map, bin.right);
                 break :blk try dst.appendInst(alloc, .bin(inst.tag, new_left, new_right));
             },
         };
@@ -712,22 +659,29 @@ pub fn appendAndRemapInsts(alloc: std.mem.Allocator, src: []const Inst, dst: *Bl
 pub fn remapTerminatorValRefs(term: *Terminator, val_map: *const std.hash_map.AutoHashMapUnmanaged(ValueRef, ValueRef)) void {
     switch (term.*) {
         .none, .dead => unreachable,
-        .ret => |*ref| ref.* = val_map.get(ref.*) orelse unreachable,
+        .ret => |*ref| ref.* = getValRefFromMap(val_map, ref.*),
         .jmp => |jmp| {
-            for (jmp.args.items) |*arg| arg.* = val_map.get(arg.*) orelse unreachable;
+            for (jmp.args.items) |*arg| arg.* = getValRefFromMap(val_map, arg.*);
         },
         .branch => |*branch| {
-            branch.condition = val_map.get(branch.condition) orelse unreachable;
-            for (branch.true_jmp.args.items) |*arg| arg.* = val_map.get(arg.*) orelse unreachable;
-            for (branch.false_jmp.args.items) |*arg| arg.* = val_map.get(arg.*) orelse unreachable;
+            branch.condition = getValRefFromMap(val_map, branch.condition);
+            for (branch.true_jmp.args.items) |*arg| arg.* = getValRefFromMap(val_map, arg.*);
+            for (branch.false_jmp.args.items) |*arg| arg.* = getValRefFromMap(val_map, arg.*);
         },
     }
 }
 
+fn getValRefFromMap(map: *const std.hash_map.AutoHashMapUnmanaged(ValueRef, ValueRef), ref: ValueRef) ValueRef {
+    if (ref.tag == .imm) return ref;
+    return map.get(ref) orelse unreachable;
+}
+
 pub fn remapValueRef(block: *Block, old: ValueRef, new: ValueRef) void {
+    std.debug.assert(old.tag != .imm);
+
     for (block.insts.items) |*inst| {
         switch (inst.tag.getDataKind()) {
-            .none, .imm => {},
+            .none => {},
             .bin => {
                 const bin = &inst.data.bin;
                 if (bin.left == old) bin.left = new;
@@ -771,7 +725,7 @@ pub fn removeUnusedArgs(alloc: std.mem.Allocator, func: *Func, block_id: BlockId
 
     for (block.insts.items) |inst| {
         switch (inst.tag.getDataKind()) {
-            .none, .imm => {},
+            .none => {},
             .bin => {
                 const bin = inst.data.bin;
                 markArgRefUsed(&unused, bin.left);
@@ -828,6 +782,90 @@ pub fn removeUnusedArgs(alloc: std.mem.Allocator, func: *Func, block_id: BlockId
     return dirty;
 }
 
+const ArgImmState = union(enum) {
+    unknown,
+    overdefined,
+    imm: u64,
+
+    fn merge(a: ArgImmState, b: ArgImmState) ArgImmState {
+        return switch (a) {
+            .unknown => b,
+            .overdefined => .overdefined,
+            .imm => |x| switch (b) {
+                .unknown => a,
+                .overdefined => .overdefined,
+                .imm => |y| if (x == y) a else .overdefined,
+            },
+        };
+    }
+};
+
+fn setArgImmStateFromJmp(func: *const Func, jmp: Terminator.Jmp, pred_block_id: usize, arg_imm_states: []const []ArgImmState) bool {
+    var dirty: bool = false;
+    const block_arg_imm_states = arg_imm_states[jmp.block_id][0..];
+
+    for (jmp.args.items, 0..) |ref, arg_id| {
+        const local_state: ArgImmState = switch (ref.tag) {
+            .arg => arg_imm_states[pred_block_id][ref.data],
+            .inst => .overdefined,
+            .imm => .{ .imm = func.imms.items[ref.data] },
+        };
+
+        const state = &block_arg_imm_states[arg_id];
+        const old = state.*;
+        state.* = state.merge(local_state);
+
+        dirty = dirty or (std.meta.activeTag(state.*) != old);
+    }
+
+    return dirty;
+}
+
+pub fn forwardImmediates(alloc: std.mem.Allocator, func: *Func) !bool {
+    const dirty: bool = false;
+
+    const imm_states = try alloc.alloc([]ArgImmState, func.blocks.items.len);
+    defer alloc.free(imm_states);
+
+    for (imm_states, func.blocks.items) |*block_imm_states, block| {
+        block_imm_states.* = try alloc.alloc(ArgImmState, block.arg_count);
+        @memset(block_imm_states.*, .unknown);
+    }
+    defer for (imm_states) |block_imm_states| alloc.free(block_imm_states);
+
+    var imm_state_dirty: bool = true;
+    while (imm_state_dirty) {
+        imm_state_dirty = false;
+
+        for (func.blocks.items, 0..) |*block, block_id| {
+            switch (block.terminator) {
+                .none => unreachable,
+                .dead, .ret => {},
+                .jmp => |jmp| {
+                    imm_state_dirty = setArgImmStateFromJmp(func, jmp, block_id, imm_states) or imm_state_dirty;
+                },
+                .branch => |branch| {
+                    imm_state_dirty = setArgImmStateFromJmp(func, branch.true_jmp, block_id, imm_states) or imm_state_dirty;
+                    imm_state_dirty = setArgImmStateFromJmp(func, branch.false_jmp, block_id, imm_states) or imm_state_dirty;
+                },
+            }
+        }
+    }
+
+    for (func.blocks.items, imm_states) |*block, block_imm_states| {
+        for (block_imm_states, 0..) |imm_state, arg_id| {
+            const val = if (imm_state == .imm) imm_state.imm else continue;
+            remapValueRef(
+                block,
+                .fromArg(@intCast(arg_id)),
+                try func.appendImm(alloc, val),
+            );
+        }
+    }
+
+    return dirty;
+}
+
 fn markArgRefUsed(unused: *std.DynamicBitSetUnmanaged, ref: ValueRef) void {
     if (ref.tag == .arg) unused.unset(ref.data);
 }
@@ -840,10 +878,11 @@ pub fn optimize(alloc: std.mem.Allocator, func: *Func) !void {
             if (block.isDead()) continue;
 
             dirty = try removeUnusedArgs(alloc, func, @intCast(block_id)) or dirty;
-            dirty = try foldConstants(alloc, block) or dirty;
-            dirty = try killUnusedInstructions(alloc, block) or dirty;
+            dirty = try foldConstants(alloc, func, block) or dirty;
+            dirty = try killUnusedInsts(alloc, block) or dirty;
         }
 
+        dirty = try forwardImmediates(alloc, func) or dirty;
         dirty = try mergeBlocks(alloc, func) or dirty;
         dirty = try killUnreachableBlocks(alloc, func) or dirty;
 
@@ -905,21 +944,20 @@ pub fn validate(func: Func) void {
         for (block.insts.items, 0..) |inst, inst_id| {
             switch (inst.tag) {
                 .no_op => unreachable,
-                .imm => {},
                 .add, .sub, .mul, .div, .equal, .less, .more => {
                     const bin = inst.data.bin;
-                    validateRef(block, bin.left, @intCast(inst_id));
-                    validateRef(block, bin.right, @intCast(inst_id));
+                    validateRef(func, block, bin.left, @intCast(inst_id));
+                    validateRef(func, block, bin.right, @intCast(inst_id));
                 },
             }
         }
 
         switch (block.terminator) {
             .none, .dead => unreachable,
-            .ret => |ref| validateRef(block, ref, null),
+            .ret => |ref| validateRef(func, block, ref, null),
             .jmp => |jmp| validateJmp(func, block, jmp),
             .branch => |branch| {
-                validateRef(block, branch.condition, null);
+                validateRef(func, block, branch.condition, null);
                 validateJmp(func, block, branch.true_jmp);
                 validateJmp(func, block, branch.false_jmp);
             },
@@ -927,17 +965,93 @@ pub fn validate(func: Func) void {
     }
 }
 
-fn validateRef(block: Block, ref: ValueRef, maybe_current_inst_ref: ?InstRef) void {
+fn validateRef(func: Func, block: Block, ref: ValueRef, maybe_current_inst_ref: ?InstRef) void {
     const inst_ref = maybe_current_inst_ref orelse block.insts.items.len;
 
     switch (ref.tag) {
         .inst => std.debug.assert(ref.data < inst_ref),
         .arg => std.debug.assert(ref.data < block.arg_count),
+        .imm => std.debug.assert(ref.data < func.imms.items.len),
     }
 }
 
 fn validateJmp(func: Func, current: Block, jmp: Terminator.Jmp) void {
     std.debug.assert(jmp.block_id < func.blocks.items.len);
     std.debug.assert(jmp.args.items.len == func.blocks.items[jmp.block_id].arg_count);
-    for (jmp.args.items) |arg| validateRef(current, arg, null);
+    for (jmp.args.items) |arg| validateRef(func, current, arg, null);
+}
+
+pub fn printFunc(writer: *std.Io.Writer, func: Func) !void {
+    for (func.blocks.items, 0..) |block, block_id| {
+        try writer.print("@{}(", .{block_id});
+
+        for (0..block.arg_count) |arg_id| {
+            try writer.print("%{}", .{arg_id});
+
+            if (arg_id != block.arg_count - 1)
+                try writer.print(", ", .{});
+        }
+
+        try writer.print("):\n", .{});
+
+        for (block.insts.items, 0..) |inst, inst_id| {
+            try writer.print("${} = {s} ", .{ inst_id, @tagName(inst.tag) });
+
+            switch (inst.tag.getDataKind()) {
+                .none => {},
+                .bin => {
+                    const bin = inst.data.bin;
+                    try printValRef(writer, func, bin.left);
+                    try writer.print(", ", .{});
+                    try printValRef(writer, func, bin.right);
+                },
+            }
+
+            try writer.print("\n", .{});
+        }
+
+        switch (block.terminator) {
+            .none => try writer.print("block under construction", .{}),
+            .dead => try writer.print("dead block", .{}),
+            .ret => |val| {
+                try writer.print("ret ", .{});
+                try printValRef(writer, func, val);
+            },
+            .jmp => |jmp| {
+                try writer.print("jmp ", .{});
+                try printJmp(writer, func, jmp);
+            },
+            .branch => |branch| {
+                try writer.print("branch ", .{});
+                try printValRef(writer, func, branch.condition);
+                try writer.print(" ? ", .{});
+                try printJmp(writer, func, branch.true_jmp);
+                try writer.print(" : ", .{});
+                try printJmp(writer, func, branch.false_jmp);
+            },
+        }
+
+        try writer.print("\n\n", .{});
+    }
+}
+
+fn printJmp(writer: *std.Io.Writer, func: Func, jmp: Terminator.Jmp) !void {
+    try writer.print("@{}(", .{jmp.block_id});
+
+    for (jmp.args.items, 0..) |arg, i| {
+        try printValRef(writer, func, arg);
+
+        if (i != jmp.args.items.len - 1)
+            try writer.print(", ", .{});
+    }
+
+    try writer.print(")", .{});
+}
+
+fn printValRef(writer: *std.Io.Writer, func: Func, ref: ValueRef) !void {
+    switch (ref.tag) {
+        .inst => try writer.print("${}", .{ref.data}),
+        .arg => try writer.print("%{}", .{ref.data}),
+        .imm => try writer.print("{}", .{func.imms.items[ref.data]}),
+    }
 }

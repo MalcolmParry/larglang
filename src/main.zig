@@ -46,6 +46,7 @@ pub fn main(init: std.process.Init) !void {
             func.name.get(&lexer),
             func,
         });
+        std.log.info("{any}", .{func.imms.items});
 
         try ir_gen.optimize(alloc, func);
         try ir_gen.clean(alloc, func);
