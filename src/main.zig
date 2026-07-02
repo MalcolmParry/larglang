@@ -1,7 +1,7 @@
 const std = @import("std");
 const Lexer = @import("Lexer.zig");
-const parser = @import("parser.zig");
-const ir_gen = @import("ir.zig");
+const Ast = @import("Ast.zig");
+// const ir_gen = @import("ir.zig");
 
 pub fn main(init: std.process.Init) !void {
     const alloc = init.gpa;
@@ -22,15 +22,12 @@ pub fn main(init: std.process.Init) !void {
     defer tokens.deinit(alloc);
     Lexer.dumpTokens(tokens, src);
 
-    // lexer.head = 0;
-    // const ast = try parser.parse(.{
-    //     .gpa = init.gpa,
-    //     .arena = init.arena.allocator(),
-    //     .lexer = &lexer,
-    // });
-    //
-    // // std.log.info("\n{f}", .{ast.format(&lexer)});
-    //
+    var ast = try Ast.parse(alloc, src, tokens);
+    defer ast.nodes.deinit(alloc);
+
+    ast.dump();
+    std.log.info("{f}", .{ast});
+
     // var ir = try ir_gen.compileAst(.{ .gpa = alloc, .lexer = &lexer }, &ast);
     // defer ir.deinit(alloc);
     //

@@ -2,7 +2,6 @@ const std = @import("std");
 const Lexer = @import("Lexer.zig");
 const Token = Lexer.Token;
 const Slice = Lexer.Slice;
-const parser = @import("parser.zig");
 const IdentMap = std.array_hash_map.String(ValueRef);
 
 pub const FileScope = struct {
@@ -914,7 +913,8 @@ fn remapJmpToEmptyBlock(alloc: std.mem.Allocator, pred_jmp: *Terminator.Jmp, suc
 
     for (new_args, succ_jmp.args.items) |*new, succ_arg| {
         new.* = switch (succ_arg.tag) {
-            .imm, .inst => succ_arg,
+            .inst => unreachable,
+            .inst => succ_arg,
             .arg => pred_jmp.args.items[succ_arg.data],
         };
     }

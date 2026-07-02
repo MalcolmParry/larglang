@@ -123,7 +123,8 @@ pub fn nextToken(lexer: *Lexer) Token {
         .start => {
             result.loc.start = lexer.head;
 
-            const kind: Token.Kind = switch (lexer.peekChar(0) orelse continue :state .eof) {
+            const kind: Token.Kind = switch (lexer.peekChar(0)) {
+                0 => continue :state .eof,
                 'a'...'z', 'A'...'Z', '_' => continue :state .ident,
                 '0'...'9' => continue :state .num,
                 '(' => .lparen,
@@ -133,8 +134,8 @@ pub fn nextToken(lexer: *Lexer) Token {
                 ',' => .comma,
                 ';' => .semicolon,
                 '=' => continue :state .equal,
-                '<' => .rangle,
-                '>' => .langle,
+                '<' => .langle,
+                '>' => .rangle,
                 '+' => .plus,
                 '-' => .minus,
                 '*' => .asterisk,
@@ -163,7 +164,7 @@ pub fn nextToken(lexer: *Lexer) Token {
         .ident => {
             lexer.head += 1;
 
-            switch (lexer.peekChar(0) orelse 0) {
+            switch (lexer.peekChar(0)) {
                 'a'...'z', 'A'...'Z', '_', '0'...'9' => continue :state .ident,
                 else => {
                     const str = lexer.src[result.loc.start..lexer.head];
@@ -177,7 +178,7 @@ pub fn nextToken(lexer: *Lexer) Token {
         .num => {
             lexer.head += 1;
 
-            switch (lexer.peekChar(0) orelse 0) {
+            switch (lexer.peekChar(0)) {
                 '0'...'9' => continue :state .num,
                 else => {
                     result.kind = .int;
@@ -189,7 +190,7 @@ pub fn nextToken(lexer: *Lexer) Token {
         .equal => {
             lexer.head += 1;
 
-            switch (lexer.peekChar(0) orelse 0) {
+            switch (lexer.peekChar(0)) {
                 '=' => {
                     result.kind = .equal_equal;
                     result.loc.len = 2;
@@ -206,7 +207,7 @@ pub fn nextToken(lexer: *Lexer) Token {
         .slash => {
             lexer.head += 1;
 
-            switch (lexer.peekChar(0) orelse 0) {
+            switch (lexer.peekChar(0)) {
                 '/' => continue :state .comment,
                 else => {
                     result.kind = .slash;
@@ -218,7 +219,7 @@ pub fn nextToken(lexer: *Lexer) Token {
         .comment => {
             lexer.head += 1;
 
-            switch (lexer.peekChar(0) orelse 0) {
+            switch (lexer.peekChar(0)) {
                 0 => continue :state .eof,
                 '\n' => {
                     lexer.head += 1;
@@ -230,8 +231,8 @@ pub fn nextToken(lexer: *Lexer) Token {
     }
 }
 
-fn peekChar(lexer: *const Lexer, offset: isize) ?u8 {
+fn peekChar(lexer: *const Lexer, offset: isize) u8 {
     const pos: isize = @as(isize, @intCast(lexer.head)) + offset;
-    if (pos < 0 or pos >= lexer.src.len) return null;
+    if (pos < 0 or pos >= lexer.src.len) return 0;
     return lexer.src[@as(usize, @intCast(pos))];
 }

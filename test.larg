@@ -14,47 +14,47 @@ fn main(x, y) {
     return a + b;
 }
 
-// fn test1(x) {
-//     return ((x + 0) * 1) - 0;
-// }
+fn test1(x) {
+    return ((x + 0) * 1) - 0;
+}
 
-// fn test2(a, b, c, d) {
-//     if (a == 0) {
-//         b = b + 1;
-//     } else {
-//         b = b + 2;
-//     }
-// 
-//     if (c == 0) {
-//         b = b + 3;
-//     } else {
-//         b = b + 4;
-//     }
-// 
-//     return b + d;
-// }
+fn test2(a, b, c, d) {
+    if (a == 0) {
+        b = b + 1;
+    } else {
+        b = b + 2;
+    }
 
-// fn test3(n) {
-//     i = 0;
-//     sum = 0;
-// 
-//     while (i < n) {
-//         sum = sum + i;
-//         i = i + 1;
-//     }
-// 
-//     return sum;
-// }
+    if (c == 0) {
+        b = b + 3;
+    } else {
+        b = b + 4;
+    }
 
-// fn test4(n) {
-//     i = 0 + 0;
-//     x = 5;
-//     y = 0;
-// 
-//     while (i < n) {
-//         y = x * 2;
-//         i = i + 1;
-//     }
-// 
-//     return y;
-// }
+    return b + d;
+}
+
+fn test3(n) {
+    i = 0;
+    sum = 0;
+
+    while (i < n) {
+        sum = sum + i;
+        i = i + 1;
+    }
+
+    return sum;
+}
+
+fn test4(n) {
+    i = 0 + 0;
+    x = 5;
+    y = 0;
+
+    while (i < n) {
+        y = x * 2;
+        i = i + 1;
+    }
+
+    return y;
+}
