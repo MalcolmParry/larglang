@@ -1,7 +1,8 @@
 const std = @import("std");
 const Lexer = @import("Lexer.zig");
 const Ast = @import("Ast.zig");
-// const ir_gen = @import("ir.zig");
+const ir_gen = @import("ir_gen.zig");
+const ir_opt = @import("ir_opt.zig");
 
 pub fn main(init: std.process.Init) !void {
     const alloc = init.gpa;
@@ -28,25 +29,18 @@ pub fn main(init: std.process.Init) !void {
     ast.dump();
     std.log.info("{f}", .{ast});
 
-    // var ir = try ir_gen.compileAst(.{ .gpa = alloc, .lexer = &lexer }, &ast);
-    // defer ir.deinit(alloc);
-    //
-    // for (ir.funcs.items) |*func| {
-    //     std.log.info("\nfn {s}:\n{f}", .{
-    //         func.name.get(&lexer),
-    //         func,
-    //     });
-    //     std.log.info("{any}", .{func.imms.items});
-    //
-    //     try ir_gen.optimize(alloc, func);
-    //     std.log.info("{any}", .{func.imms.items});
-    //     try ir_gen.clean(alloc, func);
-    //
-    //     std.log.info("\nfn {s}:\n{f}", .{
-    //         func.name.get(&lexer),
-    //         func,
-    //     });
-    //
-    //     ir_gen.validate(func.*);
-    // }
+    var ir = try ir_gen.compileAst(alloc, ast);
+    defer ir.deinit(alloc);
+
+    for (ir.funcs.items) |*func| {
+        std.log.info("\n{f}", .{func});
+
+        try ir_opt.optimize(alloc, func);
+        std.log.info("{any}", .{func.imms.items});
+        try ir_opt.clean(alloc, func);
+
+        std.log.info("\n{f}", .{func});
+
+        ir_opt.validate(func.*);
+    }
 }
