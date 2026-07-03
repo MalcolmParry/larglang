@@ -253,11 +253,11 @@ fn compileCodeBlock(
                     .condition = cond_ref,
                     .true_jmp = .{
                         .block_id = body_id,
-                        .args = .fromOwnedSlice(try alloc.dupe(ValueRef, jmp_args)),
+                        .args = .fromOwnedSlice(try alloc.dupe(ValueRef, new_ident_map.values())),
                     },
                     .false_jmp = .{
                         .block_id = end_id,
-                        .args = .fromOwnedSlice(try alloc.dupe(ValueRef, jmp_args)),
+                        .args = .fromOwnedSlice(try alloc.dupe(ValueRef, new_ident_map.values())),
                     },
                 } };
 
