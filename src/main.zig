@@ -3,6 +3,7 @@ const Lexer = @import("Lexer.zig");
 const Ast = @import("Ast.zig");
 const ir_gen = @import("ir_gen.zig");
 const ir_opt = @import("ir_opt.zig");
+const mir_gen = @import("codegen/amd64/mir_gen.zig");
 
 pub fn main(init: std.process.Init) !void {
     const alloc = init.gpa;
@@ -21,13 +22,13 @@ pub fn main(init: std.process.Init) !void {
 
     var tokens = try Lexer.getTokens(alloc, src);
     defer tokens.deinit(alloc);
-    Lexer.dumpTokens(tokens, src);
+    // Lexer.dumpTokens(tokens, src);
 
     var ast = try Ast.parse(alloc, src, tokens);
     defer ast.nodes.deinit(alloc);
 
-    ast.dump();
-    std.log.info("{f}", .{ast});
+    // ast.dump();
+    // std.log.info("{f}", .{ast});
 
     var ir = try ir_gen.compileAst(alloc, ast);
     defer ir.deinit(alloc);
@@ -42,5 +43,9 @@ pub fn main(init: std.process.Init) !void {
         std.log.info("\n{f}", .{func});
 
         ir_opt.validate(func.*);
+
+        var mir = try mir_gen.gen(alloc, func.*);
+        defer mir.deinit(alloc);
+        std.log.info("mir:\n{f}", .{mir});
     }
 }
