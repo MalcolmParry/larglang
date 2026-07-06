@@ -41,6 +41,18 @@ pub const Inst = struct {
         cmp_eq,
         cmp_ult,
         cmp_ugt,
+
+        pub fn hasSideEffects(tag: Tag) bool {
+            _ = tag;
+            return false;
+        }
+
+        pub fn getDataKind(tag: Tag) Data.Kind {
+            return switch (tag) {
+                .no_op => .none,
+                .add, .sub, .mul, .udiv, .cmp_eq, .cmp_ult, .cmp_ugt => .bin,
+            };
+        }
     };
 
     pub const Data = union {
@@ -50,6 +62,11 @@ pub const Inst = struct {
         pub const Bin = struct {
             left: ValueRef,
             right: ValueRef,
+        };
+
+        pub const Kind = enum {
+            none,
+            bin,
         };
     };
 };
@@ -171,7 +188,7 @@ pub fn format(mir: Mir, writer: *std.Io.Writer) !void {
                 try printJmp(writer, mir, b.else_jmp);
             },
             .branch_cmp => |b| {
-                try writer.print("branch_bool (", .{});
+                try writer.print("branch_cmp (", .{});
                 try printValRef(writer, mir, b.left);
                 try writer.print(" {s} ", .{@tagName(b.cond)});
                 try printValRef(writer, mir, b.right);

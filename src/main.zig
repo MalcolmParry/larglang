@@ -4,6 +4,7 @@ const Ast = @import("Ast.zig");
 const ir_gen = @import("ir_gen.zig");
 const ir_opt = @import("ir_opt.zig");
 const mir_gen = @import("codegen/amd64/mir_gen.zig");
+const mir_opt = @import("codegen/amd64/mir_opt.zig");
 
 pub fn main(init: std.process.Init) !void {
     const alloc = init.gpa;
@@ -12,8 +13,7 @@ pub fn main(init: std.process.Init) !void {
     const src_file = try std.Io.Dir.cwd().openFile(io, "test.larg", .{});
     defer src_file.close(io);
 
-    var src_reader_buffer: [1024]u8 = undefined;
-    var src_reader = src_file.reader(io, src_reader_buffer[0..]);
+    var src_reader = src_file.reader(io, &.{});
     const src_len = try src_reader.getSize();
     const src = try alloc.alloc(u8, src_len);
     defer alloc.free(src);
@@ -46,6 +46,10 @@ pub fn main(init: std.process.Init) !void {
 
         var mir = try mir_gen.gen(alloc, func.*);
         defer mir.deinit(alloc);
-        std.log.info("mir:\n{f}", .{mir});
+        std.log.info("machine ir:\n{f}", .{mir});
+
+        try mir_opt.optimize(alloc, &mir);
+        try mir_opt.clean(alloc, &mir);
+        std.log.info("optimized machine ir:\n{f}", .{mir});
     }
 }
