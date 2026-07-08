@@ -5,6 +5,7 @@ const ir_gen = @import("ir_gen.zig");
 const ir_opt = @import("ir_opt.zig");
 const mir_gen = @import("codegen/amd64/mir_gen.zig");
 const mir_opt = @import("codegen/amd64/mir_opt.zig");
+const reg_alloc = @import("codegen/amd64/RegAlloc.zig");
 
 pub fn main(init: std.process.Init) !void {
     const alloc = init.gpa;
@@ -51,5 +52,9 @@ pub fn main(init: std.process.Init) !void {
         try mir_opt.optimize(alloc, &mir);
         try mir_opt.clean(alloc, &mir);
         std.log.info("optimized machine ir:\n{f}", .{mir});
+
+        var ramir = try reg_alloc.emitRamir(alloc, mir);
+        defer ramir.deinit(alloc);
+        std.log.info("register allocated machine ir:\n{f}", .{ramir});
     }
 }

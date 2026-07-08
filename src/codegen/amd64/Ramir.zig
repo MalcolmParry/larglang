@@ -31,6 +31,9 @@ pub const Inst = struct {
         no_op,
 
         mov,
+        push,
+        pop,
+        cmp,
         xor,
 
         add,
@@ -46,6 +49,7 @@ pub const Inst = struct {
 
     pub const Data = union {
         none: void,
+        r: Reg,
         rr: Rr,
         ri: Ri,
         rm: Rm,
@@ -80,9 +84,14 @@ pub const Inst = struct {
 
         pub const Kind = enum {
             none,
+            r,
             rr,
             ri,
+            rm,
+            mr,
+            m,
             cr,
+            cm,
         };
     };
 };
@@ -91,19 +100,10 @@ pub const Term = union(enum) {
     none,
     not_reachable,
     jmp: Block.Id,
-    branch_bool: BranchBool,
-    branch_cmp: BranchCmp,
+    branch: Branch,
 
-    pub const BranchBool = struct {
-        cond: Operand,
-        then_jmp: Block.Id,
-        else_jmp: Block.Id,
-    };
-
-    pub const BranchCmp = struct {
+    pub const Branch = struct {
         cond: Cond,
-        left: Operand,
-        right: Operand,
         then_jmp: Block.Id,
         else_jmp: Block.Id,
     };
@@ -113,11 +113,6 @@ pub const Cond = enum {
     eq,
     ult,
     ugt,
-};
-
-pub const Operand = union(enum) {
-    reg: Reg,
-    imm: ImmId,
 };
 
 pub const Reg = enum {
@@ -166,5 +161,93 @@ pub const Mem = struct {
         @"2",
         @"4",
         @"8",
+
+        pub fn toFactor(scale: Scale) usize {
+            return switch (scale) {
+                .@"1" => 1,
+                .@"2" => 2,
+                .@"4" => 4,
+                .@"8" => 8,
+            };
+        }
     };
 };
+
+pub fn format(ramir: Ramir, writer: *std.Io.Writer) !void {
+    try writer.print("fn '{s}':\n", .{ramir.link_sym});
+
+    for (ramir.blocks.items, 0..) |block, block_id| {
+        try writer.print("@{}:\n", .{block_id});
+
+        for (0..block.insts.len) |inst_id| {
+            const inst = block.insts.get(inst_id);
+
+            try writer.print("{s} ", .{@tagName(inst.tag)});
+
+            switch (inst.data_kind) {
+                .none => {},
+                .r => try writer.print("{s}", .{@tagName(inst.data.r)}),
+                .rr => try writer.print("{s}, {s}", .{ @tagName(inst.data.rr.r1), @tagName(inst.data.rr.r2) }),
+                .ri => try writer.print("{s}, {}", .{ @tagName(inst.data.ri.r), ramir.imms.items[inst.data.ri.i] }),
+                .m => try printMem(writer, inst.data.m),
+                .rm => {
+                    const d = inst.data.rm;
+                    try writer.print("{s}, ", .{@tagName(d.r)});
+                    try printMem(writer, d.m);
+                },
+                .mr => {
+                    const d = inst.data.rm;
+                    try printMem(writer, d.m);
+                    try writer.print(", {s}", .{@tagName(d.r)});
+                },
+                .cr => {
+                    const d = inst.data.cr;
+                    try writer.print("{s} ? {s}", .{ @tagName(d.c), @tagName(d.r) });
+                },
+                .cm => {
+                    const d = inst.data.cm;
+                    try writer.print("{s} ? ", .{@tagName(d.c)});
+                    try printMem(writer, d.m);
+                },
+            }
+
+            try writer.print("\n", .{});
+        }
+
+        switch (block.term) {
+            .none => try writer.print("no terminator", .{}),
+            .not_reachable => try writer.print("unreachable", .{}),
+            .jmp => |target| try writer.print("jmp [@{}]", .{target}),
+            .branch => |b| try writer.print("branch {s} ? @{} : @{}", .{ @tagName(b.cond), b.then_jmp, b.else_jmp }),
+        }
+
+        try writer.print("\n\n", .{});
+    }
+}
+
+fn printMem(writer: *std.Io.Writer, mem: Mem) !void {
+    try writer.print("[", .{});
+
+    switch (mem.base) {
+        .none => {},
+        .reg => |reg| try writer.print("{s} + ", .{@tagName(reg)}),
+        .block => |block_id| try writer.print("@{} + ", .{block_id}),
+    }
+
+    switch (mem.mod) {
+        .off => |off| try writer.print("0x{x}", .{off}),
+        .rm => |rm| {
+            try writer.print("{s}", .{@tagName(rm.index)});
+
+            if (rm.scale != .@"1") try writer.print(" * {}", .{rm.scale.toFactor()});
+
+            if (rm.disp > 0) {
+                try writer.print(" + 0x{x}", .{rm.disp});
+            } else if (rm.disp < 0) {
+                try writer.print(" - 0x{x}", .{-rm.disp});
+            }
+        },
+    }
+
+    try writer.print("]", .{});
+}

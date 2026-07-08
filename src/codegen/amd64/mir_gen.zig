@@ -73,7 +73,7 @@ pub fn gen(alloc: std.mem.Allocator, ir: Ir.Func) !Mir {
                 var then_jmp = try translateJmp(alloc, val_map, b.true_jmp);
                 errdefer then_jmp.deinit(alloc);
 
-                var else_jmp = try translateJmp(alloc, val_map, b.true_jmp);
+                var else_jmp = try translateJmp(alloc, val_map, b.false_jmp);
                 errdefer else_jmp.deinit(alloc);
 
                 break :blk .{ .branch_bool = .{
