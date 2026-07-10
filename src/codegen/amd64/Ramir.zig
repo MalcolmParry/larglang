@@ -29,6 +29,7 @@ pub const Inst = struct {
 
     pub const Tag = enum {
         no_op,
+        label,
 
         mov,
         push,
@@ -42,13 +43,15 @@ pub const Inst = struct {
         udiv,
 
         setcc,
-        // jmp,
-        // jcc,
         ret,
+        jmp,
+        jcc,
     };
 
     pub const Data = union {
         none: void,
+        u16: u16,
+        c_u16: C_U16,
         r: Reg,
         rr: Rr,
         ri: Ri,
@@ -56,6 +59,11 @@ pub const Inst = struct {
         m: Mem,
         cr: Cr,
         cm: Cm,
+
+        pub const C_U16 = struct {
+            cond: Cond,
+            int: u16,
+        };
 
         pub const Rr = struct {
             r1: Reg,
@@ -84,6 +92,8 @@ pub const Inst = struct {
 
         pub const Kind = enum {
             none,
+            u16,
+            c_u16,
             r,
             rr,
             ri,
@@ -111,8 +121,22 @@ pub const Term = union(enum) {
 
 pub const Cond = enum {
     eq,
+    neq,
     ult,
+    ule,
     ugt,
+    uge,
+
+    pub fn opposite(cond: Cond) Cond {
+        return switch (cond) {
+            .eq => .neq,
+            .neq => .eq,
+            .ult => .uge,
+            .ule => .ugt,
+            .ugt => .ule,
+            .uge => .ult,
+        };
+    }
 };
 
 pub const Reg = enum {
@@ -186,6 +210,8 @@ pub fn format(ramir: Ramir, writer: *std.Io.Writer) !void {
 
             switch (inst.data_kind) {
                 .none => {},
+                .u16 => try writer.print("{}", .{inst.data.u16}),
+                .c_u16 => try writer.print("{s} {}", .{ @tagName(inst.data.c_u16.cond), inst.data.c_u16.int }),
                 .r => try writer.print("{s}", .{@tagName(inst.data.r)}),
                 .rr => try writer.print("{s}, {s}", .{ @tagName(inst.data.rr.r1), @tagName(inst.data.rr.r2) }),
                 .ri => try writer.print("{s}, {}", .{ @tagName(inst.data.ri.r), ramir.imms.items[inst.data.ri.i] }),

@@ -6,6 +6,7 @@ const ir_opt = @import("ir_opt.zig");
 const mir_gen = @import("codegen/amd64/mir_gen.zig");
 const mir_opt = @import("codegen/amd64/mir_opt.zig");
 const reg_alloc = @import("codegen/amd64/RegAlloc.zig");
+const ramir_merge = @import("codegen/amd64/ramir_merge.zig");
 
 pub fn main(init: std.process.Init) !void {
     const alloc = init.gpa;
@@ -56,5 +57,8 @@ pub fn main(init: std.process.Init) !void {
         var ramir = try reg_alloc.emitRamir(alloc, mir);
         defer ramir.deinit(alloc);
         std.log.info("register allocated machine ir:\n{f}", .{ramir});
+
+        try ramir_merge.merge(alloc, &ramir);
+        std.log.info("merged ramir:\n{f}", .{ramir});
     }
 }
