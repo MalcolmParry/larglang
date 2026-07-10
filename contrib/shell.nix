@@ -7,5 +7,6 @@ pkgs.mkShell {
     pkgs.zig_0_16
     pkgs.zls_0_16
     pkgs.git
+    pkgs.nasm
   ];
 }
