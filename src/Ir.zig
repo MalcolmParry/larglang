@@ -15,6 +15,11 @@ pub const Func = struct {
     link_sym: []const u8,
     blocks: std.ArrayList(Block),
     imms: std.ArrayList(u64),
+    flags: Flags,
+
+    pub const Flags = packed struct {
+        export_: bool,
+    };
 
     pub fn deinit(func: *Func, alloc: std.mem.Allocator) void {
         for (func.blocks.items) |*block| block.deinit(alloc);
@@ -190,6 +195,10 @@ pub const Inst = struct {
 };
 
 pub fn printFunc(writer: *std.Io.Writer, func: Func) !void {
+    if (func.flags.export_) {
+        try writer.print("export ", .{});
+    }
+
     try writer.print("fn '{s}':\n", .{func.link_sym});
 
     for (func.blocks.items, 0..) |block, block_id| {

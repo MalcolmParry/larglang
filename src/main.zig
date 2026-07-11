@@ -25,13 +25,13 @@ pub fn main(init: std.process.Init) !void {
 
     var tokens = try Lexer.getTokens(alloc, src);
     defer tokens.deinit(alloc);
-    // Lexer.dumpTokens(tokens, src);
+    Lexer.dumpTokens(tokens, src);
 
     var ast = try Ast.parse(alloc, src, tokens);
-    defer ast.nodes.deinit(alloc);
+    defer ast.deinit(alloc);
 
-    // ast.dump();
-    // std.log.info("{f}", .{ast});
+    ast.dump();
+    std.log.info("{f}", .{ast});
 
     var ir = try ir_gen.compileAst(alloc, ast);
     defer ir.deinit(alloc);

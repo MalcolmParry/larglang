@@ -24,41 +24,40 @@ pub fn compileAst(alloc: std.mem.Allocator, ast: Ast) !Ir {
         std.debug.assert(fn_node.kind == .func);
         tl_i += 1;
 
-        const block_node = ast.nodes.get(tl_i);
-        std.debug.assert(block_node.kind == .block);
-        tl_i += 1;
+        const fn_data = fn_node.data.token_extra;
+        const ast_func: *Ast.Node.Func = @ptrCast(ast.extra_data.ptr + fn_data.extra);
 
         var ident_map: IdentMap = .empty;
         defer ident_map.deinit(alloc);
 
-        var arg_count: u14 = 0;
-        while (tl_i < tl_end) : ({
-            tl_i += 1;
-            arg_count += 1;
-        }) {
-            const param_node = ast.nodes.get(tl_i);
-            if (param_node.kind != .param) break;
+        const first_param = fn_data.extra + Ast.sizeInExtraData(Ast.Node.Func);
+        for (0..ast_func.param_count) |param_id| {
+            const param: *Ast.Node.Param = @ptrCast(ast.extra_data.ptr + first_param + param_id);
 
             try ident_map.put(
                 alloc,
-                ast.tokens.get(param_node.main_token_id).loc.get(ast.src),
-                .fromArg(arg_count),
+                ast.tokens.get(param.token).loc.get(ast.src),
+                .fromArg(@intCast(param_id)),
             );
         }
 
         var func: Func = .{
-            .link_sym = ast.tokens.get(fn_node.data.token).loc.get(ast.src),
+            .link_sym = ast.tokens.get(fn_data.token).loc.get(ast.src),
             .blocks = .empty,
             .imms = .empty,
+            .flags = .{
+                .export_ = ast_func.flags.export_,
+            },
         };
         errdefer func.deinit(alloc);
 
         try func.blocks.append(alloc, .{
-            .arg_count = arg_count,
+            .arg_count = ast_func.param_count,
             .insts = .empty,
             .terminator = .none,
         });
 
+        const block_node = ast.nodes.get(ast_func.block);
         const block_state = try compileCodeBlock(alloc, ast, block_node.data.node_slice, &func, ident_map, 0);
         switch (block_state) {
             .returned => {},

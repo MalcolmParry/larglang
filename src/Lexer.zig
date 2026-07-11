@@ -43,6 +43,7 @@ pub const Token = struct {
         kw_if,
         kw_else,
         kw_while,
+        kw_export,
 
         err_invalid_char,
 
@@ -61,6 +62,7 @@ const keywords: std.static_string_map.StaticStringMap(Token.Kind) = .initComptim
     .{ "if", .kw_if },
     .{ "else", .kw_else },
     .{ "while", .kw_while },
+    .{ "export", .kw_export },
 });
 
 pub fn getTokens(alloc: std.mem.Allocator, src: []const u8) !TokenList {

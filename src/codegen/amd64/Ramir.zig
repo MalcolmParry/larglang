@@ -4,6 +4,11 @@ const Ramir = @This();
 link_sym: []const u8,
 blocks: std.ArrayList(Block),
 imms: std.ArrayList(u64),
+flags: Flags,
+
+pub const Flags = packed struct {
+    export_: bool,
+};
 
 pub fn deinit(ramir: *Ramir, alloc: std.mem.Allocator) void {
     for (ramir.blocks.items) |*b| b.deinit(alloc);
@@ -198,6 +203,7 @@ pub const Mem = struct {
 };
 
 pub fn format(ramir: Ramir, writer: *std.Io.Writer) !void {
+    if (ramir.flags.export_) try writer.print("export ", .{});
     try writer.print("fn '{s}':\n", .{ramir.link_sym});
 
     for (ramir.blocks.items, 0..) |block, block_id| {

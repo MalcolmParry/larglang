@@ -9,6 +9,9 @@ pub fn gen(alloc: std.mem.Allocator, ir: Ir.Func) !Mir {
         .link_sym = ir.link_sym,
         .blocks = try .initCapacity(alloc, ir.blocks.items.len),
         .imms = try ir.imms.clone(alloc),
+        .flags = .{
+            .export_ = ir.flags.export_,
+        },
     };
     errdefer mir.deinit(alloc);
 

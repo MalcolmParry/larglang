@@ -10,9 +10,15 @@ pub fn emit(writer: *std.Io.Writer, ramir: Ramir) !void {
     try writer.print(
         \\section .text
         \\bits 64
-        \\{s}:
         \\
-    , .{ramir.link_sym});
+    , .{});
+
+    if (ramir.flags.export_) {
+        try writer.print("global {s}\n", .{ramir.link_sym});
+    }
+
+    try writer.print("{s}:\n", .{ramir.link_sym});
+
     for (0..block.insts.len) |inst_id| {
         const inst = block.insts.get(inst_id);
 

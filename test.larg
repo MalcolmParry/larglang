@@ -46,7 +46,7 @@
 //     return sum;
 // }
 
-fn test4(n) {
+export fn test4(n) {
     i = 0 + 0;
     x = 5;
     y = 0;

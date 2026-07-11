@@ -9,6 +9,7 @@ const Ast = @This();
 src: []const u8,
 tokens: TokenList,
 nodes: NodeList,
+extra_data: []u32,
 
 pub const NodeList = std.MultiArrayList(Node).Slice;
 pub const Node = struct {
@@ -34,14 +35,10 @@ pub const Node = struct {
     pub const Kind = enum {
         /// uses data.node_slice
         root,
-        /// uses data.token, stores name
-        /// always has 1 block after it
-        /// then a variable number of param nodes
+        /// uses data.token_extra, stores name and func struct
         func,
         /// uses data.node_slice
         block,
-        /// uses data.token, stores name
-        param,
 
         /// uses data.token_node
         stat_assign,
@@ -79,6 +76,7 @@ pub const Node = struct {
         int: u64,
         token: TokenIndex,
         node_opt_node: NodeAndOptNode,
+        token_extra: TokenAndExtra,
 
         pub const NodeSlice = struct {
             first_node: Index,
@@ -99,12 +97,41 @@ pub const Node = struct {
             left: Index,
             right: OptIndex,
         };
+
+        pub const TokenAndExtra = struct {
+            token: TokenIndex,
+            extra: u32,
+        };
+    };
+
+    /// in extra array
+    /// always has param_count instances of Param struct after it in extra array
+    pub const Func = struct {
+        flags: Flags,
+        param_count: u16,
+        block: Index,
+
+        pub const Flags = packed struct {
+            export_: bool = false,
+        };
+    };
+
+    pub const Param = struct {
+        token: TokenIndex,
     };
 };
+
+pub fn deinit(ast: *Ast, alloc: std.mem.Allocator) void {
+    ast.nodes.deinit(alloc);
+    alloc.free(ast.extra_data);
+}
 
 pub fn parse(alloc: std.mem.Allocator, src: []const u8, tokens: TokenList) !Ast {
     var nodes: std.MultiArrayList(Node) = .empty;
     errdefer nodes.deinit(alloc);
+
+    var extra: std.ArrayList(u32) = .empty;
+    errdefer extra.deinit(alloc);
 
     try nodes.ensureTotalCapacity(alloc, src.len / 5);
     nodes.appendAssumeCapacity(.{
@@ -118,6 +145,7 @@ pub fn parse(alloc: std.mem.Allocator, src: []const u8, tokens: TokenList) !Ast 
         .src = src,
         .tokens = tokens,
         .nodes = &nodes,
+        .extra = &extra,
         .head = 0,
     };
 
@@ -128,7 +156,7 @@ pub fn parse(alloc: std.mem.Allocator, src: []const u8, tokens: TokenList) !Ast 
         const token = parser.peekToken(0);
 
         switch (token.kind) {
-            .kw_fn => try parser.parseFunc(&tl_nodes),
+            .kw_fn, .kw_export => try parser.parseFunc(&tl_nodes),
             .eof => break,
             else => return error.ParserFailed,
         }
@@ -149,6 +177,7 @@ pub fn parse(alloc: std.mem.Allocator, src: []const u8, tokens: TokenList) !Ast 
         .src = src,
         .tokens = tokens,
         .nodes = nodes.slice(),
+        .extra_data = try extra.toOwnedSlice(alloc),
     };
 }
 
@@ -157,19 +186,32 @@ pub const Parser = struct {
     src: []const u8,
     tokens: TokenList,
     nodes: *std.MultiArrayList(Node),
+    extra: *std.ArrayList(u32),
     head: TokenIndex,
 
     const Error = error{ ParserFailed, Overflow, OutOfMemory };
 
     fn parseFunc(parser: *Parser, tl_nodes: *std.MultiArrayList(Node)) !void {
         const alloc = parser.alloc;
-        const main_token_id = parser.head;
-        _ = try parser.popExpectToken(.kw_fn);
+
+        var flags: Node.Func.Flags = .{};
+        while (true) {
+            const token = parser.popToken();
+
+            switch (token.kind) {
+                .kw_export => flags.export_ = true,
+                .kw_fn => break,
+                else => try parser.expectToken(token, .kw_fn),
+            }
+        }
+
+        const main_token_id = parser.head - 1;
         _ = try parser.popExpectToken(.ident);
 
-        const func_id = try tl_nodes.addOne(alloc);
-        const block_id = try tl_nodes.addOne(alloc);
+        const func_extra_index = parser.extra.items.len;
+        _ = try parser.addExtra(Node.Func);
 
+        var param_count: u16 = 0;
         if (parser.popToken().kind == .lparen) {
             const State = enum {
                 after_comma,
@@ -183,11 +225,11 @@ pub const Parser = struct {
 
                     switch (token.kind) {
                         .ident => {
-                            try tl_nodes.append(alloc, .{
-                                .kind = .param,
-                                .main_token_id = token_id,
-                                .data = .{ .none = {} },
-                            });
+                            param_count += 1;
+                            const param_data = try parser.addExtra(Node.Param);
+                            param_data.* = .{
+                                .token = token_id,
+                            };
 
                             continue :state .expect_comma;
                         },
@@ -208,14 +250,27 @@ pub const Parser = struct {
         }
 
         const block_node = try parser.parseBlock();
+        const block_id = parser.nodes.len;
+        try parser.nodes.append(alloc, block_node);
 
-        tl_nodes.set(func_id, .{
+        const func: *Node.Func = @ptrCast(parser.extra.items.ptr + func_extra_index);
+
+        func.* = .{
+            .flags = flags,
+            .param_count = param_count,
+            .block = @intCast(block_id),
+        };
+
+        try tl_nodes.append(alloc, .{
             .kind = .func,
             .main_token_id = main_token_id,
-            .data = .{ .token = main_token_id + 1 },
+            .data = .{
+                .token_extra = .{
+                    .token = main_token_id + 1,
+                    .extra = @intCast(func_extra_index),
+                },
+            },
         });
-
-        tl_nodes.set(block_id, block_node);
     }
 
     fn parseBlock(parser: *Parser) Error!Node {
@@ -437,7 +492,21 @@ pub const Parser = struct {
 
         return parser.tokens.get(@intCast(parser.head));
     }
+
+    fn addExtra(parser: *Parser, T: type) !*T {
+        const item_count = sizeInExtraData(T);
+
+        const old_count = parser.extra.items.len;
+        try parser.extra.resize(parser.alloc, old_count + item_count);
+
+        return @ptrCast(parser.extra.items.ptr + old_count);
+    }
 };
+
+pub fn sizeInExtraData(T: type) usize {
+    std.debug.assert(@alignOf(T) <= @alignOf(u32));
+    return comptime std.math.divCeil(usize, @sizeOf(T), @sizeOf(u32)) catch unreachable;
+}
 
 pub fn format(ast: Ast, writer: *std.Io.Writer) !void {
     try writer.print("AST:\n", .{});
@@ -447,31 +516,33 @@ pub fn format(ast: Ast, writer: *std.Io.Writer) !void {
     const tl_end = tl_slice.first_node + tl_slice.len;
 
     var i: usize = tl_slice.first_node;
-    while (i < tl_end) {
+    while (i < tl_end) : (i += 1) {
         const node = ast.nodes.get(i);
         std.debug.assert(node.kind == .func);
-        i += 1;
 
-        const block = ast.nodes.get(i);
-        i += 1;
+        const node_d = node.data.token_extra;
+        const func: *Node.Func = @ptrCast(ast.extra_data.ptr + node_d.extra);
+
+        if (func.flags.export_) {
+            try writer.print("export ", .{});
+        }
 
         try writer.print("fn {s}(", .{
-            ast.tokens.get(node.data.token).loc.get(ast.src),
+            ast.tokens.get(node_d.token).loc.get(ast.src),
         });
 
-        const first_param_i = i;
-        while (i < tl_end) : (i += 1) {
-            const param = ast.nodes.get(i);
-            if (param.kind != .param) break;
+        const first_param = node_d.extra + sizeInExtraData(Node.Func);
+        for (0..func.param_count) |param_id| {
+            const param: *Node.Param = @ptrCast(ast.extra_data.ptr + first_param + param_id);
 
-            if (i != first_param_i) try writer.print(", ", .{});
+            if (param_id != 0) try writer.print(", ", .{});
             try writer.print("{s}", .{
-                ast.tokens.get(param.main_token_id).loc.get(ast.src),
+                ast.tokens.get(param.token).loc.get(ast.src),
             });
         }
 
         try writer.print("):\n", .{});
-        try printBlock(writer, ast, block, 1);
+        try printBlock(writer, ast, ast.nodes.get(func.block), 1);
         try writer.print("\n", .{});
     }
 }
@@ -587,11 +658,19 @@ pub fn dump(ast: Ast) void {
                 const data = node.data.node_node;
                 std.debug.print("nodes[{}], nodes[{}]", .{ data.left, data.right });
             },
-            .expr_ident, .param => {
+            .expr_ident => {
                 std.debug.print("tokens[{}]", .{node.main_token_id});
             },
             .func => {
-                std.debug.print("tokens[{}]", .{node.data.token});
+                const d = node.data.token_extra;
+                const func: *Node.Func = @ptrCast(ast.extra_data.ptr + d.extra);
+                std.debug.print("tokens[{}], {any}, param tokens: ", .{ d.token, func });
+
+                const first_param = d.extra + sizeInExtraData(Node.Func);
+                for (0..func.param_count) |param_id| {
+                    const param: *Node.Param = @ptrCast(ast.extra_data.ptr + first_param + param_id);
+                    std.debug.print("{}, ", .{param.token});
+                }
             },
             .stat_if => {
                 std.debug.print("nodes[{}], ", .{node.data.node_opt_node.left});

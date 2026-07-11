@@ -4,6 +4,11 @@ const Mir = @This();
 link_sym: []const u8,
 blocks: std.ArrayList(Block),
 imms: std.ArrayList(u64),
+flags: Flags,
+
+pub const Flags = packed struct {
+    export_: bool,
+};
 
 pub fn deinit(mir: *Mir, alloc: std.mem.Allocator) void {
     for (mir.blocks.items) |*b| b.deinit(alloc);
@@ -140,6 +145,8 @@ pub const ValueRef = packed struct(u32) {
 };
 
 pub fn format(mir: Mir, writer: *std.Io.Writer) !void {
+    if (mir.flags.export_) try writer.print("export ", .{});
+
     try writer.print("fn '{s}':\n", .{mir.link_sym});
 
     for (mir.blocks.items, 0..) |block, block_id| {

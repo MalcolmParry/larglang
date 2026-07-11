@@ -29,6 +29,9 @@ pub fn emitRamir(alloc: std.mem.Allocator, mir: Mir) !Ramir {
         .link_sym = mir.link_sym,
         .blocks = try .initCapacity(alloc, mir.blocks.items.len),
         .imms = try mir.imms.clone(alloc),
+        .flags = .{
+            .export_ = mir.flags.export_,
+        },
     };
     errdefer ramir.deinit(alloc);
 
