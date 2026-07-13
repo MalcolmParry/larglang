@@ -1,14 +1,10 @@
 const std = @import("std");
+const CompUnit = @import("../../CompUnit.zig");
 const Ramir = @This();
 
 link_sym: []const u8,
 blocks: std.ArrayList(Block),
-imms: std.ArrayList(u64),
-flags: Flags,
-
-pub const Flags = packed struct {
-    export_: bool,
-};
+imms: std.ArrayList(CompUnit.Immediate),
 
 pub fn deinit(ramir: *Ramir, alloc: std.mem.Allocator) void {
     for (ramir.blocks.items) |*b| b.deinit(alloc);
@@ -172,6 +168,7 @@ pub const Mem = struct {
         none,
         reg: Reg,
         block: Block.Id,
+        global: CompUnit.Global.Ref,
     };
 
     pub const Mod = union(enum) {
@@ -203,7 +200,6 @@ pub const Mem = struct {
 };
 
 pub fn format(ramir: Ramir, writer: *std.Io.Writer) !void {
-    if (ramir.flags.export_) try writer.print("export ", .{});
     try writer.print("fn '{s}':\n", .{ramir.link_sym});
 
     for (ramir.blocks.items, 0..) |block, block_id| {
@@ -264,6 +260,7 @@ fn printMem(writer: *std.Io.Writer, mem: Mem) !void {
         .none => {},
         .reg => |reg| try writer.print("{s} + ", .{@tagName(reg)}),
         .block => |block_id| try writer.print("@{} + ", .{block_id}),
+        .global => |global_id| try writer.print("g{} + ", .{global_id}),
     }
 
     switch (mem.mod) {

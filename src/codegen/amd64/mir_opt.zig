@@ -47,6 +47,7 @@ pub fn killUnusedInsts(alloc: std.mem.Allocator, mir: *Mir) !bool {
 
             switch (inst.tag.getDataKind()) {
                 .none => {},
+                .unary => markValRefUsed(&unused_set, inst.data.unary),
                 .bin => {
                     const bin = inst.data.bin;
                     markValRefUsed(&unused_set, bin.left);
@@ -126,6 +127,11 @@ pub fn clean(alloc: std.mem.Allocator, mir: *Mir) !void {
 
                 switch (inst.tag.getDataKind()) {
                     .none => {},
+                    .unary => {
+                        var ref = inst.data.unary;
+                        if (ref.tag == .inst and ref.id >= inst_id) ref.id -= 1;
+                        block.insts.items(.data)[inner_id] = .{ .unary = ref };
+                    },
                     .bin => {
                         var bin = inst.data.bin;
                         if (bin.left.tag == .inst and bin.left.id >= inst_id) bin.left.id -= 1;

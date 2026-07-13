@@ -4,14 +4,11 @@ const Mir = @import("Mir.zig");
 
 const ValMap = std.hash_map.AutoHashMapUnmanaged(Ir.ValueRef, Mir.ValueRef);
 
-pub fn gen(alloc: std.mem.Allocator, ir: Ir.Func) !Mir {
+pub fn gen(alloc: std.mem.Allocator, ir: Ir) !Mir {
     var mir: Mir = .{
         .link_sym = ir.link_sym,
         .blocks = try .initCapacity(alloc, ir.blocks.items.len),
         .imms = try ir.imms.clone(alloc),
-        .flags = .{
-            .export_ = ir.flags.export_,
-        },
     };
     errdefer mir.deinit(alloc);
 
@@ -32,7 +29,23 @@ pub fn gen(alloc: std.mem.Allocator, ir: Ir.Func) !Mir {
         for (ir_block.insts.items, 0..) |ir_inst, ir_inst_id| {
             switch (ir_inst.tag) {
                 .no_op => {},
-                .add, .sub, .mul, .div, .less, .equal, .more => {
+                .load => {
+                    const mir_inst_id = mir_block.insts.len;
+
+                    mir_block.insts.appendAssumeCapacity(.{ .tag = .load, .data = .{
+                        .unary = translateValRef(val_map, ir_inst.data.unary),
+                    } });
+
+                    val_map.putAssumeCapacity(.{
+                        .tag = .inst,
+                        .data = @intCast(ir_inst_id),
+                    }, .{
+                        .tag = .inst,
+                        .class = .gp,
+                        .id = @intCast(mir_inst_id),
+                    });
+                },
+                .add, .sub, .mul, .div, .less, .equal, .more, .store => {
                     const mir_inst_id = mir_block.insts.len;
                     const ir_data = ir_inst.data.bin;
                     const mir_data: Mir.Inst.Data.Bin = .{
@@ -48,6 +61,7 @@ pub fn gen(alloc: std.mem.Allocator, ir: Ir.Func) !Mir {
                         .less => .cmp_ult,
                         .equal => .cmp_eq,
                         .more => .cmp_ugt,
+                        .store => .store,
                         else => unreachable,
                     };
 

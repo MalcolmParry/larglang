@@ -29,9 +29,6 @@ pub fn emitRamir(alloc: std.mem.Allocator, mir: Mir) !Ramir {
         .link_sym = mir.link_sym,
         .blocks = try .initCapacity(alloc, mir.blocks.items.len),
         .imms = try mir.imms.clone(alloc),
-        .flags = .{
-            .export_ = mir.flags.export_,
-        },
     };
     errdefer ramir.deinit(alloc);
 
@@ -55,7 +52,7 @@ pub fn emitRamir(alloc: std.mem.Allocator, mir: Mir) !Ramir {
                 .data = .{ .rr = .{ .r1 = .rbp, .r2 = .rsp } },
             });
 
-            try ramir.imms.append(alloc, alloc_result.stack_top);
+            try ramir.imms.append(alloc, .{ .int = alloc_result.stack_top });
             try ra_block.insts.append(alloc, .{
                 .tag = .sub,
                 .data_kind = .ri,
@@ -80,6 +77,46 @@ pub fn emitRamir(alloc: std.mem.Allocator, mir: Mir) !Ramir {
 
             switch (inst.tag) {
                 .no_op => continue,
+                .load => {
+                    const ref = inst.data.unary;
+                    std.debug.assert(ref.tag == .imm);
+
+                    try ra_block.insts.append(alloc, .{
+                        .tag = .mov,
+                        .data_kind = .rm,
+                        .data = .{ .rm = .{
+                            .r = .rax,
+                            .m = .{
+                                .base = .{ .global = mir.imms.items[ref.id].global_addr },
+                                .mod = .{ .off = 0 },
+                            },
+                        } },
+                    });
+
+                    try storeRegInAlloc(alloc, &ra_block, .rax, map.get(.{
+                        .inst = .{
+                            .block = @intCast(block_id),
+                            .id = @intCast(inst_id),
+                        },
+                    }) orelse unreachable);
+                },
+                .store => {
+                    const bin = inst.data.bin;
+                    try putGlobalRefInReg(alloc, map.*, &ra_block, .rax, globalRefFromLocal(@intCast(block_id), bin.right));
+
+                    std.debug.assert(bin.left.tag == .imm);
+                    try ra_block.insts.append(alloc, .{
+                        .tag = .mov,
+                        .data_kind = .mr,
+                        .data = .{ .rm = .{
+                            .r = .rax,
+                            .m = .{
+                                .base = .{ .global = mir.imms.items[bin.left.id].global_addr },
+                                .mod = .{ .off = 0 },
+                            },
+                        } },
+                    });
+                },
                 .add, .sub, .mul, .udiv, .cmp_eq, .cmp_ult, .cmp_ugt => {
                     const bin = inst.data.bin;
                     try putGlobalRefInReg(alloc, map.*, &ra_block, .rax, globalRefFromLocal(@intCast(block_id), bin.left));
@@ -156,7 +193,7 @@ pub fn emitRamir(alloc: std.mem.Allocator, mir: Mir) !Ramir {
                 try storeJmpArgs(alloc, map.*, @intCast(block_id), &ra_block, b.else_jmp);
 
                 try putGlobalRefInReg(alloc, map.*, &ra_block, .rax, globalRefFromLocal(@intCast(block_id), b.cond));
-                try ramir.imms.append(alloc, 0);
+                try ramir.imms.append(alloc, .{ .int = 0 });
                 try ra_block.insts.append(alloc, .{
                     .tag = .cmp,
                     .data_kind = .ri,

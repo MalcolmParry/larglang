@@ -1,14 +1,10 @@
 const std = @import("std");
+const CompUnit = @import("../../CompUnit.zig");
 const Mir = @This();
 
 link_sym: []const u8,
 blocks: std.ArrayList(Block),
-imms: std.ArrayList(u64),
-flags: Flags,
-
-pub const Flags = packed struct {
-    export_: bool,
-};
+imms: std.ArrayList(CompUnit.Immediate),
 
 pub fn deinit(mir: *Mir, alloc: std.mem.Allocator) void {
     for (mir.blocks.items) |*b| b.deinit(alloc);
@@ -47,21 +43,28 @@ pub const Inst = struct {
         cmp_ult,
         cmp_ugt,
 
+        load,
+        store,
+
         pub fn hasSideEffects(tag: Tag) bool {
-            _ = tag;
-            return false;
+            return switch (tag) {
+                .store => true,
+                else => false,
+            };
         }
 
         pub fn getDataKind(tag: Tag) Data.Kind {
             return switch (tag) {
                 .no_op => .none,
-                .add, .sub, .mul, .udiv, .cmp_eq, .cmp_ult, .cmp_ugt => .bin,
+                .load => .unary,
+                .add, .sub, .mul, .udiv, .cmp_eq, .cmp_ult, .cmp_ugt, .store => .bin,
             };
         }
     };
 
     pub const Data = union {
         none: void,
+        unary: ValueRef,
         bin: Bin,
 
         pub const Bin = struct {
@@ -71,6 +74,7 @@ pub const Inst = struct {
 
         pub const Kind = enum {
             none,
+            unary,
             bin,
         };
     };
@@ -145,8 +149,6 @@ pub const ValueRef = packed struct(u32) {
 };
 
 pub fn format(mir: Mir, writer: *std.Io.Writer) !void {
-    if (mir.flags.export_) try writer.print("export ", .{});
-
     try writer.print("fn '{s}':\n", .{mir.link_sym});
 
     for (mir.blocks.items, 0..) |block, block_id| {
@@ -165,7 +167,8 @@ pub fn format(mir: Mir, writer: *std.Io.Writer) !void {
             try writer.print("${} = {s} ", .{ inst_id, @tagName(inst.tag) });
             switch (inst.tag) {
                 .no_op => {},
-                .add, .sub, .mul, .udiv, .cmp_ult, .cmp_eq, .cmp_ugt => {
+                .load => try printValRef(writer, mir, inst.data.unary),
+                .add, .sub, .mul, .udiv, .cmp_ult, .cmp_eq, .cmp_ugt, .store => {
                     const data = inst.data.bin;
                     try printValRef(writer, mir, data.left);
                     try writer.print(", ", .{});
@@ -223,6 +226,6 @@ fn printValRef(writer: *std.Io.Writer, mir: Mir, ref: ValueRef) !void {
     switch (ref.tag) {
         .inst => try writer.print("${}", .{ref.id}),
         .arg => try writer.print("%{}", .{ref.id}),
-        .imm => try writer.print("{}", .{mir.imms.items[ref.id]}),
+        .imm => try writer.print("{f}", .{mir.imms.items[ref.id]}),
     }
 }

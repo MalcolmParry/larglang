@@ -1,44 +1,24 @@
 const std = @import("std");
+const CompUnit = @import("CompUnit.zig");
 const Ir = @This();
 
-funcs: std.ArrayList(Func),
+link_sym: []const u8,
+blocks: std.ArrayList(Block),
+imms: std.ArrayList(CompUnit.Immediate),
 
-pub fn deinit(ir: *Ir, alloc: std.mem.Allocator) void {
-    for (ir.funcs.items) |*func| {
-        func.deinit(alloc);
-    }
-
-    ir.funcs.deinit(alloc);
+pub fn deinit(func: *Ir, alloc: std.mem.Allocator) void {
+    for (func.blocks.items) |*block| block.deinit(alloc);
+    func.blocks.deinit(alloc);
+    func.imms.deinit(alloc);
 }
 
-pub const Func = struct {
-    link_sym: []const u8,
-    blocks: std.ArrayList(Block),
-    imms: std.ArrayList(u64),
-    flags: Flags,
-
-    pub const Flags = packed struct {
-        export_: bool,
+pub fn appendImm(func: *Ir, alloc: std.mem.Allocator, val: CompUnit.Immediate) !ValueRef {
+    try func.imms.append(alloc, val);
+    return .{
+        .tag = .imm,
+        .data = @intCast(func.imms.items.len - 1),
     };
-
-    pub fn deinit(func: *Func, alloc: std.mem.Allocator) void {
-        for (func.blocks.items) |*block| block.deinit(alloc);
-        func.blocks.deinit(alloc);
-        func.imms.deinit(alloc);
-    }
-
-    pub fn appendImm(func: *Func, alloc: std.mem.Allocator, val: u64) !ValueRef {
-        try func.imms.append(alloc, val);
-        return .{
-            .tag = .imm,
-            .data = @intCast(func.imms.items.len - 1),
-        };
-    }
-
-    pub fn format(func: Func, writer: *std.Io.Writer) std.Io.Writer.Error!void {
-        try printFunc(writer, func);
-    }
-};
+}
 
 pub const BlockId = u32;
 pub const Block = struct {
@@ -154,24 +134,32 @@ pub const Inst = struct {
         less,
         more,
 
+        load,
+        store,
+
         pub fn getDataKind(tag: Tag) Data.Kind {
             return switch (tag) {
                 .no_op => .none,
-                .add, .sub, .mul, .div, .equal, .less, .more => .bin,
+                .add, .sub, .mul, .div, .equal, .less, .more, .store => .bin,
+                .load => .unary,
             };
         }
 
         pub fn hasSideEffects(tag: Tag) bool {
-            _ = tag;
-            return false;
+            return switch (tag) {
+                .store => true,
+                else => false,
+            };
         }
     };
 
     pub const Data = union {
+        unary: ValueRef,
         bin: BinOp,
 
         pub const Kind = enum {
             none,
+            unary,
             bin,
         };
     };
@@ -182,6 +170,14 @@ pub const Inst = struct {
     };
 
     pub const noop: Inst = .{ .tag = .no_op, .data = undefined };
+    pub fn unary(tag: Tag, ref: ValueRef) Inst {
+        std.debug.assert(tag.getDataKind() == .unary);
+        return .{
+            .tag = tag,
+            .data = .{ .unary = ref },
+        };
+    }
+
     pub fn bin(tag: Tag, left: ValueRef, right: ValueRef) Inst {
         std.debug.assert(tag.getDataKind() == .bin);
         return .{
@@ -194,14 +190,10 @@ pub const Inst = struct {
     }
 };
 
-pub fn printFunc(writer: *std.Io.Writer, func: Func) !void {
-    if (func.flags.export_) {
-        try writer.print("export ", .{});
-    }
+pub fn format(ir: Ir, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+    try writer.print("fn '{s}':\n", .{ir.link_sym});
 
-    try writer.print("fn '{s}':\n", .{func.link_sym});
-
-    for (func.blocks.items, 0..) |block, block_id| {
+    for (ir.blocks.items, 0..) |block, block_id| {
         try writer.print("@{}(", .{block_id});
 
         for (0..block.arg_count) |arg_id| {
@@ -218,11 +210,14 @@ pub fn printFunc(writer: *std.Io.Writer, func: Func) !void {
 
             switch (inst.tag.getDataKind()) {
                 .none => {},
+                .unary => {
+                    try printValRef(writer, ir, inst.data.unary);
+                },
                 .bin => {
                     const bin = inst.data.bin;
-                    try printValRef(writer, func, bin.left);
+                    try printValRef(writer, ir, bin.left);
                     try writer.print(", ", .{});
-                    try printValRef(writer, func, bin.right);
+                    try printValRef(writer, ir, bin.right);
                 },
             }
 
@@ -234,19 +229,19 @@ pub fn printFunc(writer: *std.Io.Writer, func: Func) !void {
             .dead => try writer.print("dead block", .{}),
             .ret => |val| {
                 try writer.print("ret ", .{});
-                try printValRef(writer, func, val);
+                try printValRef(writer, ir, val);
             },
             .jmp => |jmp| {
                 try writer.print("jmp ", .{});
-                try printJmp(writer, func, jmp);
+                try printJmp(writer, ir, jmp);
             },
             .branch => |branch| {
                 try writer.print("branch ", .{});
-                try printValRef(writer, func, branch.condition);
+                try printValRef(writer, ir, branch.condition);
                 try writer.print(" ? ", .{});
-                try printJmp(writer, func, branch.true_jmp);
+                try printJmp(writer, ir, branch.true_jmp);
                 try writer.print(" : ", .{});
-                try printJmp(writer, func, branch.false_jmp);
+                try printJmp(writer, ir, branch.false_jmp);
             },
         }
 
@@ -254,11 +249,11 @@ pub fn printFunc(writer: *std.Io.Writer, func: Func) !void {
     }
 }
 
-fn printJmp(writer: *std.Io.Writer, func: Func, jmp: Terminator.Jmp) !void {
+fn printJmp(writer: *std.Io.Writer, ir: Ir, jmp: Terminator.Jmp) !void {
     try writer.print("@{}(", .{jmp.block_id});
 
     for (jmp.args.items, 0..) |arg, i| {
-        try printValRef(writer, func, arg);
+        try printValRef(writer, ir, arg);
 
         if (i != jmp.args.items.len - 1)
             try writer.print(", ", .{});
@@ -267,10 +262,10 @@ fn printJmp(writer: *std.Io.Writer, func: Func, jmp: Terminator.Jmp) !void {
     try writer.print(")", .{});
 }
 
-fn printValRef(writer: *std.Io.Writer, func: Func, ref: ValueRef) !void {
+fn printValRef(writer: *std.Io.Writer, ir: Ir, ref: ValueRef) !void {
     switch (ref.tag) {
         .inst => try writer.print("${}", .{ref.data}),
         .arg => try writer.print("%{}", .{ref.data}),
-        .imm => try writer.print("{}", .{func.imms.items[ref.data]}),
+        .imm => try writer.print("{f}", .{ir.imms.items[ref.data]}),
     }
 }

@@ -39,6 +39,8 @@ pub const Node = struct {
         func,
         /// uses data.node_slice
         block,
+        /// uses data.token_node
+        global_var,
 
         /// uses data.token_node
         stat_assign,
@@ -157,6 +159,7 @@ pub fn parse(alloc: std.mem.Allocator, src: []const u8, tokens: TokenList) !Ast 
 
         switch (token.kind) {
             .kw_fn, .kw_export => try parser.parseFunc(&tl_nodes),
+            .ident => try tl_nodes.append(alloc, try parser.parseGlobalVar()),
             .eof => break,
             else => return error.ParserFailed,
         }
@@ -271,6 +274,25 @@ pub const Parser = struct {
                 },
             },
         });
+    }
+
+    fn parseGlobalVar(parser: *Parser) Error!Node {
+        const main_token_id = parser.head;
+        _ = try parser.popExpectToken(.ident);
+        _ = try parser.popExpectToken(.equal);
+
+        const expr = try parser.parseExpr(0);
+
+        _ = try parser.popExpectToken(.semicolon);
+
+        return .{
+            .kind = .global_var,
+            .main_token_id = main_token_id,
+            .data = .{ .token_node = .{
+                .token = main_token_id,
+                .node = expr,
+            } },
+        };
     }
 
     fn parseBlock(parser: *Parser) Error!Node {
@@ -518,32 +540,43 @@ pub fn format(ast: Ast, writer: *std.Io.Writer) !void {
     var i: usize = tl_slice.first_node;
     while (i < tl_end) : (i += 1) {
         const node = ast.nodes.get(i);
-        std.debug.assert(node.kind == .func);
 
-        const node_d = node.data.token_extra;
-        const func: *Node.Func = @ptrCast(ast.extra_data.ptr + node_d.extra);
+        switch (node.kind) {
+            .func => {
+                const node_d = node.data.token_extra;
+                const func: *Node.Func = @ptrCast(ast.extra_data.ptr + node_d.extra);
 
-        if (func.flags.export_) {
-            try writer.print("export ", .{});
+                if (func.flags.export_) {
+                    try writer.print("export ", .{});
+                }
+
+                try writer.print("fn {s}(", .{
+                    ast.tokens.get(node_d.token).loc.get(ast.src),
+                });
+
+                const first_param = node_d.extra + sizeInExtraData(Node.Func);
+                for (0..func.param_count) |param_id| {
+                    const param: *Node.Param = @ptrCast(ast.extra_data.ptr + first_param + param_id);
+
+                    if (param_id != 0) try writer.print(", ", .{});
+                    try writer.print("{s}", .{
+                        ast.tokens.get(param.token).loc.get(ast.src),
+                    });
+                }
+
+                try writer.print("):\n", .{});
+                try printBlock(writer, ast, ast.nodes.get(func.block), 1);
+                try writer.print("\n", .{});
+            },
+            .global_var => {
+                const d = node.data.token_node;
+
+                try writer.print("global {s} = ", .{ast.tokens.get(d.token).loc.get(ast.src)});
+                try printExpr(writer, ast, ast.nodes.get(d.node));
+                try writer.print("\n", .{});
+            },
+            else => unreachable,
         }
-
-        try writer.print("fn {s}(", .{
-            ast.tokens.get(node_d.token).loc.get(ast.src),
-        });
-
-        const first_param = node_d.extra + sizeInExtraData(Node.Func);
-        for (0..func.param_count) |param_id| {
-            const param: *Node.Param = @ptrCast(ast.extra_data.ptr + first_param + param_id);
-
-            if (param_id != 0) try writer.print(", ", .{});
-            try writer.print("{s}", .{
-                ast.tokens.get(param.token).loc.get(ast.src),
-            });
-        }
-
-        try writer.print("):\n", .{});
-        try printBlock(writer, ast, ast.nodes.get(func.block), 1);
-        try writer.print("\n", .{});
     }
 }
 
@@ -644,7 +677,7 @@ pub fn dump(ast: Ast) void {
                 const slice = node.data.node_slice;
                 std.debug.print("nodes[{}..][0..{}]", .{ slice.first_node, slice.len });
             },
-            .stat_assign => {
+            .stat_assign, .global_var => {
                 const data = node.data.token_node;
                 std.debug.print("tokens[{}], node[{}]", .{ data.token, data.node });
             },

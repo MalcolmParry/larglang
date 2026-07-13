@@ -1,6 +1,5 @@
 const std = @import("std");
 const Ir = @import("Ir.zig");
-const Func = Ir.Func;
 const Block = Ir.Block;
 const ValueRef = Ir.ValueRef;
 const Terminator = Ir.Terminator;
@@ -9,15 +8,15 @@ const InstRef = Ir.InstRef;
 const BlockId = Ir.BlockId;
 const Inst = Ir.Inst;
 
-pub fn foldConstants(alloc: std.mem.Allocator, func: *Func, block: *Block) !bool {
+pub fn foldConstants(alloc: std.mem.Allocator, ir: *Ir, block: *Block) !bool {
     var dirty: bool = false;
 
     for (block.insts.items, 0..) |*inst, inst_id| {
         switch (inst.tag) {
             .add, .sub, .mul, .div, .equal, .less, .more => {
                 const bin = inst.data.bin;
-                const left = getImmediate(func, bin.left) orelse continue;
-                const right = getImmediate(func, bin.right) orelse continue;
+                const left = getImmediate(ir, bin.left) orelse continue;
+                const right = getImmediate(ir, bin.right) orelse continue;
 
                 const result: u64 = switch (inst.tag) {
                     .add => left +% right,
@@ -35,7 +34,7 @@ pub fn foldConstants(alloc: std.mem.Allocator, func: *Func, block: *Block) !bool
                 remapValueRef(
                     block,
                     .fromInst(@intCast(inst_id)),
-                    try func.appendImm(alloc, result),
+                    try ir.appendImm(alloc, .{ .int = result }),
                 );
             },
             else => {},
@@ -45,7 +44,7 @@ pub fn foldConstants(alloc: std.mem.Allocator, func: *Func, block: *Block) !bool
     blk: switch (block.terminator) {
         .none, .dead, .jmp, .ret => {},
         .branch => |*branch| {
-            const val = getImmediate(func, branch.condition) orelse break :blk;
+            const val = getImmediate(ir, branch.condition) orelse break :blk;
             const jmp = if (val != 0) branch.true_jmp else branch.false_jmp;
             const other = if (val != 0) &branch.false_jmp else &branch.true_jmp;
 
@@ -58,10 +57,17 @@ pub fn foldConstants(alloc: std.mem.Allocator, func: *Func, block: *Block) !bool
     return dirty;
 }
 
-pub fn getImmediate(func: *const Func, ref: ValueRef) ?u64 {
+pub fn getImmediate(ir: *const Ir, ref: ValueRef) ?u64 {
     return switch (ref.tag) {
         .inst, .arg => null,
-        .imm => func.imms.items[ref.data],
+        .imm => {
+            const val = ir.imms.items[ref.data];
+
+            return switch (val) {
+                .int => |int| int,
+                .global_addr => null,
+            };
+        },
     };
 }
 
@@ -74,6 +80,7 @@ pub fn killUnusedInsts(alloc: std.mem.Allocator, block: *Block) !bool {
     for (block.insts.items) |inst| {
         switch (inst.tag.getDataKind()) {
             .none => {},
+            .unary => markValueRefUsed(&unused, inst.data.unary),
             .bin => {
                 const bin = inst.data.bin;
                 markValueRefUsed(&unused, bin.left);
@@ -111,17 +118,17 @@ fn markValueRefUsed(unused: *std.DynamicBitSetUnmanaged, ref: ValueRef) void {
     if (ref.tag == .inst) unused.unset(ref.data);
 }
 
-pub fn killUnreachableBlocks(alloc: std.mem.Allocator, func: *Func) !bool {
+pub fn killUnreachableBlocks(alloc: std.mem.Allocator, ir: *Ir) !bool {
     var dirty: bool = false;
-    var unused: std.DynamicBitSetUnmanaged = try .initFull(alloc, func.blocks.items.len);
+    var unused: std.DynamicBitSetUnmanaged = try .initFull(alloc, ir.blocks.items.len);
     defer unused.deinit(alloc);
-    markBlockRefs(func, &unused, 0);
+    markBlockRefs(ir, &unused, 0);
 
     while (unused.findFirstSet()) |block_id_usize| {
         const block_id: u32 = @intCast(block_id_usize);
         unused.unset(block_id);
 
-        const block = &func.blocks.items[block_id];
+        const block = &ir.blocks.items[block_id];
         if (block.isDead()) continue;
         block.kill(alloc);
         dirty = true;
@@ -130,38 +137,38 @@ pub fn killUnreachableBlocks(alloc: std.mem.Allocator, func: *Func) !bool {
     return dirty;
 }
 
-fn markBlockRefs(func: *const Func, unused: *std.DynamicBitSetUnmanaged, block_id: u32) void {
+fn markBlockRefs(ir: *const Ir, unused: *std.DynamicBitSetUnmanaged, block_id: u32) void {
     if (!unused.isSet(block_id)) return;
     unused.unset(block_id);
 
-    const block = &func.blocks.items[block_id];
+    const block = &ir.blocks.items[block_id];
     switch (block.terminator) {
         .none => unreachable,
         .dead, .ret => {},
         .jmp => |jmp| {
-            markBlockRefs(func, unused, jmp.block_id);
+            markBlockRefs(ir, unused, jmp.block_id);
         },
         .branch => |branch| {
-            markBlockRefs(func, unused, branch.true_jmp.block_id);
-            markBlockRefs(func, unused, branch.false_jmp.block_id);
+            markBlockRefs(ir, unused, branch.true_jmp.block_id);
+            markBlockRefs(ir, unused, branch.false_jmp.block_id);
         },
     }
 }
 
-pub fn mergeBlocks(alloc: std.mem.Allocator, func: *Func) !bool {
+pub fn mergeBlocks(alloc: std.mem.Allocator, ir: *Ir) !bool {
     var dirty: bool = false;
 
     var old_to_new_val: std.hash_map.AutoHashMapUnmanaged(ValueRef, ValueRef) = .empty;
     defer old_to_new_val.deinit(alloc);
 
-    for (func.blocks.items, 0..) |*block, block_id| {
+    for (ir.blocks.items, 0..) |*block, block_id| {
         if (block.terminator != .jmp) continue;
         const other_id = block.terminator.jmp.block_id;
         if (other_id == block_id) continue;
-        const other = &func.blocks.items[other_id];
+        const other = &ir.blocks.items[other_id];
 
         var ref_count: usize = 0;
-        for (func.blocks.items) |x| {
+        for (ir.blocks.items) |x| {
             switch (x.terminator) {
                 .none => unreachable,
                 .dead, .ret => {},
@@ -206,6 +213,10 @@ pub fn appendAndRemapInsts(alloc: std.mem.Allocator, src: []const Inst, dst: *Bl
 
         const new = switch (inst.tag.getDataKind()) {
             .none => try dst.appendInst(alloc, inst),
+            .unary => blk: {
+                const new_ref = getValRefFromMap(val_map, inst.data.unary);
+                break :blk try dst.appendInst(alloc, .unary(inst.tag, new_ref));
+            },
             .bin => blk: {
                 const bin = inst.data.bin;
                 const new_left = getValRefFromMap(val_map, bin.left);
@@ -244,6 +255,10 @@ pub fn remapValueRef(block: *Block, old: ValueRef, new: ValueRef) void {
     for (block.insts.items) |*inst| {
         switch (inst.tag.getDataKind()) {
             .none => {},
+            .unary => {
+                const ref = &inst.data.unary;
+                if (ref.* == old) ref.* = new;
+            },
             .bin => {
                 const bin = &inst.data.bin;
                 if (bin.left == old) bin.left = new;
@@ -276,18 +291,19 @@ pub fn remapValueRef(block: *Block, old: ValueRef, new: ValueRef) void {
     }
 }
 
-pub fn removeUnusedArgs(alloc: std.mem.Allocator, func: *Func, block_id: BlockId) !bool {
+pub fn removeUnusedArgs(alloc: std.mem.Allocator, ir: *Ir, block_id: BlockId) !bool {
     // args to the first block are function parameters and cant be removed
     if (block_id == 0) return false;
 
     var dirty: bool = false;
-    const block = &func.blocks.items[block_id];
+    const block = &ir.blocks.items[block_id];
     var unused: std.DynamicBitSetUnmanaged = try .initFull(alloc, block.arg_count);
     defer unused.deinit(alloc);
 
     for (block.insts.items) |inst| {
         switch (inst.tag.getDataKind()) {
             .none => {},
+            .unary => markArgRefUsed(&unused, inst.data.unary),
             .bin => {
                 const bin = inst.data.bin;
                 markArgRefUsed(&unused, bin.left);
@@ -322,7 +338,7 @@ pub fn removeUnusedArgs(alloc: std.mem.Allocator, func: *Func, block_id: BlockId
             remapValueRef(block, .fromArg(@intCast(last)), .fromArg(@intCast(arg_id)));
         }
 
-        for (func.blocks.items) |*other| {
+        for (ir.blocks.items) |*other| {
             switch (other.terminator) {
                 .none => unreachable,
                 .dead, .ret => {},
@@ -349,20 +365,20 @@ const ArgImmState = union(enum) {
     overdefined,
     imm: ImmRef,
 
-    fn merge(a: ArgImmState, b: ArgImmState, func: *const Func) ArgImmState {
+    fn merge(a: ArgImmState, b: ArgImmState, ir: *const Ir) ArgImmState {
         return switch (a) {
             .unknown => b,
             .overdefined => .overdefined,
             .imm => |x| switch (b) {
                 .unknown => a,
                 .overdefined => .overdefined,
-                .imm => |y| if (func.imms.items[x] == func.imms.items[y]) a else .overdefined,
+                .imm => |y| if (ir.imms.items[x].equal(ir.imms.items[y])) a else .overdefined,
             },
         };
     }
 };
 
-fn setArgImmStateFromJmp(func: *const Func, jmp: Terminator.Jmp, pred_block_id: usize, arg_imm_states: []const []ArgImmState) bool {
+fn setArgImmStateFromJmp(ir: *const Ir, jmp: Terminator.Jmp, pred_block_id: usize, arg_imm_states: []const []ArgImmState) bool {
     var dirty: bool = false;
     const block_arg_imm_states = arg_imm_states[jmp.block_id][0..];
 
@@ -375,7 +391,7 @@ fn setArgImmStateFromJmp(func: *const Func, jmp: Terminator.Jmp, pred_block_id: 
 
         const state = &block_arg_imm_states[arg_id];
         const old = state.*;
-        state.* = state.merge(local_state, func);
+        state.* = state.merge(local_state, ir);
 
         dirty = dirty or (std.meta.activeTag(state.*) != old);
     }
@@ -383,13 +399,13 @@ fn setArgImmStateFromJmp(func: *const Func, jmp: Terminator.Jmp, pred_block_id: 
     return dirty;
 }
 
-pub fn forwardImmediates(alloc: std.mem.Allocator, func: *Func) !bool {
+pub fn forwardImmediates(alloc: std.mem.Allocator, ir: *Ir) !bool {
     const dirty: bool = false;
 
-    const imm_states = try alloc.alloc([]ArgImmState, func.blocks.items.len);
+    const imm_states = try alloc.alloc([]ArgImmState, ir.blocks.items.len);
     defer alloc.free(imm_states);
 
-    for (imm_states, func.blocks.items) |*block_imm_states, block| {
+    for (imm_states, ir.blocks.items) |*block_imm_states, block| {
         block_imm_states.* = try alloc.alloc(ArgImmState, block.arg_count);
         @memset(block_imm_states.*, .unknown);
     }
@@ -399,22 +415,22 @@ pub fn forwardImmediates(alloc: std.mem.Allocator, func: *Func) !bool {
     while (imm_state_dirty) {
         imm_state_dirty = false;
 
-        for (func.blocks.items, 0..) |*block, block_id| {
+        for (ir.blocks.items, 0..) |*block, block_id| {
             switch (block.terminator) {
                 .none => unreachable,
                 .dead, .ret => {},
                 .jmp => |jmp| {
-                    imm_state_dirty = setArgImmStateFromJmp(func, jmp, block_id, imm_states) or imm_state_dirty;
+                    imm_state_dirty = setArgImmStateFromJmp(ir, jmp, block_id, imm_states) or imm_state_dirty;
                 },
                 .branch => |branch| {
-                    imm_state_dirty = setArgImmStateFromJmp(func, branch.true_jmp, block_id, imm_states) or imm_state_dirty;
-                    imm_state_dirty = setArgImmStateFromJmp(func, branch.false_jmp, block_id, imm_states) or imm_state_dirty;
+                    imm_state_dirty = setArgImmStateFromJmp(ir, branch.true_jmp, block_id, imm_states) or imm_state_dirty;
+                    imm_state_dirty = setArgImmStateFromJmp(ir, branch.false_jmp, block_id, imm_states) or imm_state_dirty;
                 },
             }
         }
     }
 
-    for (func.blocks.items, imm_states) |*block, block_imm_states| {
+    for (ir.blocks.items, imm_states) |*block, block_imm_states| {
         for (block_imm_states, 0..) |imm_state, arg_id| {
             const imm_ref = if (imm_state == .imm) imm_state.imm else continue;
             remapValueRef(
@@ -428,15 +444,15 @@ pub fn forwardImmediates(alloc: std.mem.Allocator, func: *Func) !bool {
     return dirty;
 }
 
-fn bypassJmpsToEmptyBlocks(alloc: std.mem.Allocator, func: *Func) !bool {
+fn bypassJmpsToEmptyBlocks(alloc: std.mem.Allocator, ir: *Ir) !bool {
     var dirty: bool = false;
 
-    for (func.blocks.items, 0..) |*succ, succ_id| {
+    for (ir.blocks.items, 0..) |*succ, succ_id| {
         if (succ.isDead()) continue;
         if (!succ.isEmpty()) continue;
         if (succ.terminator != .jmp) continue;
 
-        for (func.blocks.items) |*pred| {
+        for (ir.blocks.items) |*pred| {
             switch (pred.terminator) {
                 .none => unreachable,
                 .dead, .ret => {},
@@ -480,42 +496,42 @@ fn markArgRefUsed(unused: *std.DynamicBitSetUnmanaged, ref: ValueRef) void {
     if (ref.tag == .arg) unused.unset(ref.data);
 }
 
-pub fn optimize(alloc: std.mem.Allocator, func: *Func) !void {
+pub fn optimize(alloc: std.mem.Allocator, ir: *Ir) !void {
     while (true) {
         var dirty: bool = false;
 
-        for (func.blocks.items, 0..) |*block, block_id| {
+        for (ir.blocks.items, 0..) |*block, block_id| {
             if (block.isDead()) continue;
 
-            dirty = try removeUnusedArgs(alloc, func, @intCast(block_id)) or dirty;
-            dirty = try foldConstants(alloc, func, block) or dirty;
+            dirty = try removeUnusedArgs(alloc, ir, @intCast(block_id)) or dirty;
+            dirty = try foldConstants(alloc, ir, block) or dirty;
             dirty = try killUnusedInsts(alloc, block) or dirty;
         }
 
-        dirty = try forwardImmediates(alloc, func) or dirty;
-        dirty = try mergeBlocks(alloc, func) or dirty;
-        dirty = try killUnreachableBlocks(alloc, func) or dirty;
-        dirty = try bypassJmpsToEmptyBlocks(alloc, func) or dirty;
+        dirty = try forwardImmediates(alloc, ir) or dirty;
+        dirty = try mergeBlocks(alloc, ir) or dirty;
+        dirty = try killUnreachableBlocks(alloc, ir) or dirty;
+        dirty = try bypassJmpsToEmptyBlocks(alloc, ir) or dirty;
 
         if (!dirty) break;
     }
 }
 
-pub fn clean(alloc: std.mem.Allocator, func: *Func) !void {
+pub fn clean(alloc: std.mem.Allocator, ir: *Ir) !void {
     // remove dead blocks
     var block_id: BlockId = 0;
-    while (block_id < func.blocks.items.len) {
-        const block = &func.blocks.items[block_id];
+    while (block_id < ir.blocks.items.len) {
+        const block = &ir.blocks.items[block_id];
         if (!block.isDead()) {
             block_id += 1;
             continue;
         }
 
-        const last_id: BlockId = @intCast(func.blocks.items.len - 1);
-        _ = func.blocks.swapRemove(block_id);
+        const last_id: BlockId = @intCast(ir.blocks.items.len - 1);
+        _ = ir.blocks.swapRemove(block_id);
         if (block_id == last_id) continue;
 
-        for (func.blocks.items) |*b| {
+        for (ir.blocks.items) |*b| {
             switch (b.terminator) {
                 .none => unreachable,
                 .dead, .ret => {},
@@ -531,7 +547,7 @@ pub fn clean(alloc: std.mem.Allocator, func: *Func) !void {
     }
 
     // remove no ops
-    for (func.blocks.items) |*block| {
+    for (ir.blocks.items) |*block| {
         var old_to_new_refs: std.AutoHashMapUnmanaged(ValueRef, ValueRef) = .empty;
         defer old_to_new_refs.deinit(alloc);
 
@@ -550,44 +566,47 @@ pub fn clean(alloc: std.mem.Allocator, func: *Func) !void {
     }
 }
 
-pub fn validate(func: Func) void {
-    for (func.blocks.items) |block| {
+pub fn validate(ir: Ir) void {
+    for (ir.blocks.items) |block| {
         for (block.insts.items, 0..) |inst, inst_id| {
             switch (inst.tag) {
                 .no_op => unreachable,
-                .add, .sub, .mul, .div, .equal, .less, .more => {
+                .load => {
+                    validateRef(ir, block, inst.data.unary, @intCast(inst_id));
+                },
+                .add, .sub, .mul, .div, .equal, .less, .more, .store => {
                     const bin = inst.data.bin;
-                    validateRef(func, block, bin.left, @intCast(inst_id));
-                    validateRef(func, block, bin.right, @intCast(inst_id));
+                    validateRef(ir, block, bin.left, @intCast(inst_id));
+                    validateRef(ir, block, bin.right, @intCast(inst_id));
                 },
             }
         }
 
         switch (block.terminator) {
             .none, .dead => unreachable,
-            .ret => |ref| validateRef(func, block, ref, null),
-            .jmp => |jmp| validateJmp(func, block, jmp),
+            .ret => |ref| validateRef(ir, block, ref, null),
+            .jmp => |jmp| validateJmp(ir, block, jmp),
             .branch => |branch| {
-                validateRef(func, block, branch.condition, null);
-                validateJmp(func, block, branch.true_jmp);
-                validateJmp(func, block, branch.false_jmp);
+                validateRef(ir, block, branch.condition, null);
+                validateJmp(ir, block, branch.true_jmp);
+                validateJmp(ir, block, branch.false_jmp);
             },
         }
     }
 }
 
-fn validateRef(func: Func, block: Block, ref: ValueRef, maybe_current_inst_ref: ?InstRef) void {
+fn validateRef(ir: Ir, block: Block, ref: ValueRef, maybe_current_inst_ref: ?InstRef) void {
     const inst_ref = maybe_current_inst_ref orelse block.insts.items.len;
 
     switch (ref.tag) {
         .inst => std.debug.assert(ref.data < inst_ref),
         .arg => std.debug.assert(ref.data < block.arg_count),
-        .imm => std.debug.assert(ref.data < func.imms.items.len),
+        .imm => std.debug.assert(ref.data < ir.imms.items.len),
     }
 }
 
-fn validateJmp(func: Func, current: Block, jmp: Terminator.Jmp) void {
-    std.debug.assert(jmp.block_id < func.blocks.items.len);
-    std.debug.assert(jmp.args.items.len == func.blocks.items[jmp.block_id].arg_count);
-    for (jmp.args.items) |arg| validateRef(func, current, arg, null);
+fn validateJmp(ir: Ir, current: Block, jmp: Terminator.Jmp) void {
+    std.debug.assert(jmp.block_id < ir.blocks.items.len);
+    std.debug.assert(jmp.args.items.len == ir.blocks.items[jmp.block_id].arg_count);
+    for (jmp.args.items) |arg| validateRef(ir, current, arg, null);
 }
