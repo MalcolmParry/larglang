@@ -7,6 +7,7 @@ const CompUnit = @This();
 funcs: std.StringArrayHashMapUnmanaged(Func),
 globals: std.StringArrayHashMapUnmanaged(Global),
 export_symbols: std.StringHashMapUnmanaged(void),
+global_asm: std.ArrayList([]u8),
 
 pub const Func = struct {
     ir: Ir,
@@ -57,4 +58,5 @@ pub fn deinit(unit: *CompUnit, alloc: std.mem.Allocator) void {
     unit.funcs.deinit(alloc);
     unit.globals.deinit(alloc);
     unit.export_symbols.deinit(alloc);
+    unit.global_asm.deinit(alloc);
 }

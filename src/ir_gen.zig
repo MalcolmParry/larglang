@@ -13,6 +13,7 @@ pub fn compileAst(alloc: std.mem.Allocator, ast: Ast) !CompUnit {
         .funcs = .empty,
         .globals = .empty,
         .export_symbols = .empty,
+        .global_asm = .empty,
     };
     errdefer comp_unit.deinit(alloc);
 
@@ -91,6 +92,12 @@ pub fn compileAst(alloc: std.mem.Allocator, ast: Ast) !CompUnit {
                 if (expr.kind != .expr_lit_int) return error.CompileFailed;
 
                 try comp_unit.globals.put(alloc, name, .{ .initial_value = expr.data.int });
+            },
+            .global_asm => {
+                tl_i += 1;
+
+                const str = ast.strings[node.data.str];
+                try comp_unit.global_asm.append(alloc, str);
             },
             else => unreachable,
         }

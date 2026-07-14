@@ -44,6 +44,9 @@ pub const Token = struct {
         kw_else,
         kw_while,
         kw_export,
+        kw_asm,
+
+        multi_line_str,
 
         err_invalid_char,
 
@@ -63,6 +66,7 @@ const keywords: std.static_string_map.StaticStringMap(Token.Kind) = .initComptim
     .{ "else", .kw_else },
     .{ "while", .kw_while },
     .{ "export", .kw_export },
+    .{ "asm", .kw_asm },
 });
 
 pub fn getTokens(alloc: std.mem.Allocator, src: []const u8) !TokenList {
@@ -109,7 +113,9 @@ const State = enum {
     num,
     equal,
     slash,
+    back_slash,
     comment,
+    multi_line_str,
 };
 
 pub fn nextToken(lexer: *Lexer) Token {
@@ -142,6 +148,7 @@ pub fn nextToken(lexer: *Lexer) Token {
                 '-' => .minus,
                 '*' => .asterisk,
                 '/' => continue :state .slash,
+                '\\' => continue :state .back_slash,
                 ' ', '\n', '\r', '\t' => {
                     lexer.head += 1;
                     continue :state .start;
@@ -218,6 +225,21 @@ pub fn nextToken(lexer: *Lexer) Token {
                 },
             }
         },
+        .back_slash => {
+            lexer.head += 1;
+
+            switch (lexer.peekChar(0)) {
+                '\\' => {
+                    result.loc.start += 2;
+                    continue :state .multi_line_str;
+                },
+                else => {
+                    result.kind = .err_invalid_char;
+                    result.loc.len = 1;
+                    return result;
+                },
+            }
+        },
         .comment => {
             lexer.head += 1;
 
@@ -228,6 +250,17 @@ pub fn nextToken(lexer: *Lexer) Token {
                     continue :state .start;
                 },
                 else => continue :state .comment,
+            }
+        },
+        .multi_line_str => {
+            lexer.head += 1;
+            switch (lexer.peekChar(0)) {
+                0, '\n' => {
+                    result.kind = .multi_line_str;
+                    result.loc.len = lexer.head - result.loc.start;
+                    return result;
+                },
+                else => continue :state .multi_line_str,
             }
         },
     }

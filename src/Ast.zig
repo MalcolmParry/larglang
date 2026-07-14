@@ -10,7 +10,9 @@ src: []const u8,
 tokens: TokenList,
 nodes: NodeList,
 extra_data: []u32,
+strings: [][]u8,
 
+pub const StrIndex = u32;
 pub const NodeList = std.MultiArrayList(Node).Slice;
 pub const Node = struct {
     kind: Kind,
@@ -41,6 +43,8 @@ pub const Node = struct {
         block,
         /// uses data.token_node
         global_var,
+        /// uses data.str
+        global_asm,
 
         /// uses data.token_node
         stat_assign,
@@ -79,6 +83,7 @@ pub const Node = struct {
         token: TokenIndex,
         node_opt_node: NodeAndOptNode,
         token_extra: TokenAndExtra,
+        str: StrIndex,
 
         pub const NodeSlice = struct {
             first_node: Index,
@@ -126,6 +131,9 @@ pub const Node = struct {
 pub fn deinit(ast: *Ast, alloc: std.mem.Allocator) void {
     ast.nodes.deinit(alloc);
     alloc.free(ast.extra_data);
+
+    for (ast.strings) |str| alloc.free(str);
+    alloc.free(ast.strings);
 }
 
 pub fn parse(alloc: std.mem.Allocator, src: []const u8, tokens: TokenList) !Ast {
@@ -134,6 +142,12 @@ pub fn parse(alloc: std.mem.Allocator, src: []const u8, tokens: TokenList) !Ast 
 
     var extra: std.ArrayList(u32) = .empty;
     errdefer extra.deinit(alloc);
+
+    var strings: std.ArrayList([]u8) = .empty;
+    errdefer {
+        for (strings.items) |str| alloc.free(str);
+        strings.deinit(alloc);
+    }
 
     try nodes.ensureTotalCapacity(alloc, src.len / 5);
     nodes.appendAssumeCapacity(.{
@@ -148,6 +162,7 @@ pub fn parse(alloc: std.mem.Allocator, src: []const u8, tokens: TokenList) !Ast 
         .tokens = tokens,
         .nodes = &nodes,
         .extra = &extra,
+        .strings = &strings,
         .head = 0,
     };
 
@@ -160,6 +175,22 @@ pub fn parse(alloc: std.mem.Allocator, src: []const u8, tokens: TokenList) !Ast 
         switch (token.kind) {
             .kw_fn, .kw_export => try parser.parseFunc(&tl_nodes),
             .ident => try tl_nodes.append(alloc, try parser.parseGlobalVar()),
+            .kw_asm => {
+                const main_token_id = parser.head;
+                _ = try parser.popExpectToken(.kw_asm);
+                _ = try parser.popExpectToken(.lparen);
+
+                const str_id = try parser.parseString();
+
+                _ = try parser.popExpectToken(.rparen);
+                _ = try parser.popExpectToken(.semicolon);
+
+                try tl_nodes.append(alloc, .{
+                    .kind = .global_asm,
+                    .main_token_id = main_token_id,
+                    .data = .{ .str = str_id },
+                });
+            },
             .eof => break,
             else => return error.ParserFailed,
         }
@@ -181,6 +212,7 @@ pub fn parse(alloc: std.mem.Allocator, src: []const u8, tokens: TokenList) !Ast 
         .tokens = tokens,
         .nodes = nodes.slice(),
         .extra_data = try extra.toOwnedSlice(alloc),
+        .strings = try strings.toOwnedSlice(alloc),
     };
 }
 
@@ -190,6 +222,7 @@ pub const Parser = struct {
     tokens: TokenList,
     nodes: *std.MultiArrayList(Node),
     extra: *std.ArrayList(u32),
+    strings: *std.ArrayList([]u8),
     head: TokenIndex,
 
     const Error = error{ ParserFailed, Overflow, OutOfMemory };
@@ -482,6 +515,32 @@ pub const Parser = struct {
         return @intCast(node_id);
     }
 
+    fn parseString(parser: *Parser) !StrIndex {
+        const alloc = parser.alloc;
+        var result: std.ArrayList(u8) = .empty;
+        errdefer result.deinit(alloc);
+
+        var token = parser.peekToken(0);
+        var first: bool = true;
+        blk: switch (token.kind) {
+            .multi_line_str => {
+                const str = token.loc.get(parser.src);
+                try result.ensureUnusedCapacity(alloc, str.len + 1);
+                if (!first) result.appendAssumeCapacity('\n');
+                result.appendSliceAssumeCapacity(str);
+
+                parser.head += 1;
+                token = parser.peekToken(0);
+                first = false;
+                continue :blk token.kind;
+            },
+            else => {},
+        }
+
+        try parser.strings.append(alloc, try result.toOwnedSlice(alloc));
+        return @intCast(parser.strings.items.len - 1);
+    }
+
     fn popExpectToken(parser: *Parser, expected: Token.Kind) !Token {
         const token = parser.popToken();
         try parser.expectToken(token, expected);
@@ -574,6 +633,9 @@ pub fn format(ast: Ast, writer: *std.Io.Writer) !void {
                 try writer.print("global {s} = ", .{ast.tokens.get(d.token).loc.get(ast.src)});
                 try printExpr(writer, ast, ast.nodes.get(d.node));
                 try writer.print("\n", .{});
+            },
+            .global_asm => {
+                try writer.print("global_asm {s}\n", .{ast.strings[node.data.str]});
             },
             else => unreachable,
         }
@@ -712,6 +774,9 @@ pub fn dump(ast: Ast) void {
                 } else {
                     std.debug.print("null", .{});
                 }
+            },
+            .global_asm => {
+                std.debug.print("\"{s}\"", .{ast.strings[node.data.str]});
             },
         }
 

@@ -48,7 +48,7 @@
 
 thing = 5;
 
-export fn test4(n) {
+fn test4(n) {
 	thing = thing + n;
 
     i = 0 + 0;
@@ -62,3 +62,14 @@ export fn test4(n) {
 
     return y;
 }
+
+asm(
+	\\section .text
+	\\global _start
+	\\_start:
+	\\	mov rdi, 7
+	\\	call test4
+	\\	mov rdi, rax
+	\\	mov rax, 60
+	\\	syscall
+);

@@ -36,6 +36,10 @@ pub fn emit(writer: *std.Io.Writer, comp_unit: CompUnit) !void {
             \\
         , .{ kv.key_ptr.*, kv.value_ptr.initial_value });
     }
+
+    for (comp_unit.global_asm.items) |str| {
+        try writer.print("{s}\n", .{str});
+    }
 }
 
 pub fn emitFunc(writer: *std.Io.Writer, comp_unit: CompUnit, ramir: Ramir) !void {
