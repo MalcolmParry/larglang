@@ -13,7 +13,63 @@ pub fn main(init: std.process.Init) !void {
     const alloc = init.gpa;
     const io = init.io;
 
-    const src_file = try std.Io.Dir.cwd().openFile(io, "test.larg", .{});
+    var arg_iter = try init.minimal.args.iterateAllocator(alloc);
+    defer arg_iter.deinit();
+
+    var maybe_src_file_name: ?[]const u8 = null;
+    var maybe_out_file_name: ?[]const u8 = null;
+    var flags: CompInfo.Flags = .{};
+
+    _ = arg_iter.skip();
+    while (arg_iter.next()) |arg| {
+        if (arg.len == 0) continue;
+
+        if (arg[0] == '-') {
+            const hash = std.hash.Wyhash.hash;
+
+            switch (hash(0, arg)) {
+                hash(0, "-o") => {
+                    if (maybe_out_file_name) |_| {
+                        std.log.err("cannot specify 2 output files", .{});
+                        std.process.exit(1);
+                    }
+
+                    const output_file = arg_iter.next() orelse {
+                        std.log.err("-o option expects file", .{});
+                        std.process.exit(1);
+                    };
+
+                    maybe_out_file_name = output_file;
+                },
+                hash(0, "-dump-tokens") => flags.dump_tokens = true,
+                hash(0, "-dump-ast") => flags.dump_ast = true,
+                hash(0, "-dump-ir") => flags.dump_ir = true,
+                hash(0, "-dump-mir") => flags.dump_mir = true,
+                hash(0, "-dump-ramir") => flags.dump_ramir = true,
+                hash(0, "-no-emit") => flags.no_emit = true,
+                else => {
+                    std.log.err("invalid option '{s}'", .{arg});
+                    std.process.exit(1);
+                },
+            }
+
+            continue;
+        }
+
+        if (maybe_src_file_name) |_| {
+            std.log.err("cannot compile 2 source files at once", .{});
+            std.process.exit(1);
+        }
+
+        maybe_src_file_name = arg;
+    }
+
+    const src_file_name = maybe_src_file_name orelse {
+        std.log.err("no source file specified", .{});
+        std.process.exit(1);
+    };
+
+    const src_file = try std.Io.Dir.cwd().openFile(io, src_file_name, .{});
     defer src_file.close(io);
 
     var src_reader = src_file.reader(io, &.{});
@@ -31,21 +87,20 @@ pub fn main(init: std.process.Init) !void {
         .mode = try .detect(io, stderr, false, false),
     };
 
+    const out_file: std.Io.File = if (maybe_out_file_name) |out_file_name|
+        try std.Io.Dir.cwd().createFile(io, out_file_name, .{})
+    else
+        std.Io.File.stdout();
+
     var stdout_buffer: [4096]u8 = undefined;
-    var stdout_writer = std.Io.File.stdout().writer(io, stdout_buffer[0..]);
+    var stdout_writer = out_file.writer(io, stdout_buffer[0..]);
 
     try compile(.{
         .alloc = alloc,
         .src = src,
         .output = &stdout_writer.interface,
         .debug = stderr_term,
-        .flags = .{
-            .dump_tokens = true,
-            .dump_ast = true,
-            .dump_ir = true,
-            .dump_mir = true,
-            .dump_ramir = true,
-        },
+        .flags = flags,
     });
 
     try stderr_writer.flush();
@@ -65,6 +120,7 @@ const CompInfo = struct {
         dump_ir: bool = false,
         dump_mir: bool = false,
         dump_ramir: bool = false,
+        no_emit: bool = false,
     };
 };
 
@@ -157,7 +213,8 @@ fn compile(info: CompInfo) !void {
         }
     }
 
-    try emit_asm.emit(info.output, comp_unit);
+    if (!info.flags.no_emit)
+        try emit_asm.emit(info.output, comp_unit);
 }
 
 fn printHeading(term: std.Io.Terminal, text: []const u8) !void {
