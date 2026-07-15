@@ -38,7 +38,7 @@ pub fn emit(writer: *std.Io.Writer, comp_unit: CompUnit) !void {
     }
 
     for (comp_unit.global_asm.items) |str| {
-        try writer.print("{s}\n", .{str});
+        try writer.print("\n{s}\n", .{str});
     }
 }
 
@@ -123,7 +123,6 @@ fn printMem(writer: *std.Io.Writer, comp_unit: CompUnit, mem: Ramir.Mem) !void {
     switch (mem.base) {
         .none => {},
         .reg => |reg| try writer.print("{s} + ", .{@tagName(reg)}),
-        .block => |block_id| try writer.print("@{} + ", .{block_id}),
         .global => |global_ref| try writer.print("{s} + ", .{comp_unit.globals.keys()[global_ref]}),
     }
 

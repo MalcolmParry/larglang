@@ -44,11 +44,19 @@ pub const Immediate = union(enum) {
         };
     }
 
-    pub fn format(imm: Immediate, writer: *std.Io.Writer) !void {
+    pub fn print(imm: Immediate, term: std.Io.Terminal) !void {
+        const writer = term.writer;
+        term.setColor(switch (imm) {
+            .int => .blue,
+            .global_addr => .white,
+        }) catch {};
+
         switch (imm) {
             .int => |val| try writer.print("{}", .{val}),
             .global_addr => |global_ref| try writer.print("g{}", .{global_ref}),
         }
+
+        term.setColor(.reset) catch {};
     }
 };
 

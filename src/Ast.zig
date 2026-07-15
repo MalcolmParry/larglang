@@ -589,9 +589,8 @@ pub fn sizeInExtraData(T: type) usize {
     return comptime std.math.divCeil(usize, @sizeOf(T), @sizeOf(u32)) catch unreachable;
 }
 
-pub fn format(ast: Ast, writer: *std.Io.Writer) !void {
-    try writer.print("AST:\n", .{});
-
+pub fn print(ast: Ast, term: std.Io.Terminal) !void {
+    const writer = term.writer;
     const root = ast.nodes.get(0);
     const tl_slice = root.data.node_slice;
     const tl_end = tl_slice.first_node + tl_slice.len;
@@ -605,44 +604,62 @@ pub fn format(ast: Ast, writer: *std.Io.Writer) !void {
                 const node_d = node.data.token_extra;
                 const func: *Node.Func = @ptrCast(ast.extra_data.ptr + node_d.extra);
 
+                term.setColor(.yellow) catch {};
                 if (func.flags.export_) {
                     try writer.print("export ", .{});
                 }
 
-                try writer.print("fn {s}(", .{
+                try writer.print("fn ", .{});
+                term.setColor(.green) catch {};
+                try writer.print("{s}", .{
                     ast.tokens.get(node_d.token).loc.get(ast.src),
                 });
 
+                term.setColor(.reset) catch {};
+                try writer.print("(", .{});
                 const first_param = node_d.extra + sizeInExtraData(Node.Func);
                 for (0..func.param_count) |param_id| {
                     const param: *Node.Param = @ptrCast(ast.extra_data.ptr + first_param + param_id);
 
                     if (param_id != 0) try writer.print(", ", .{});
+
+                    term.setColor(.green) catch {};
                     try writer.print("{s}", .{
                         ast.tokens.get(param.token).loc.get(ast.src),
                     });
+                    term.setColor(.reset) catch {};
                 }
 
                 try writer.print("):\n", .{});
-                try printBlock(writer, ast, ast.nodes.get(func.block), 1);
+                try printBlock(term, ast, ast.nodes.get(func.block), 1);
                 try writer.print("\n", .{});
             },
             .global_var => {
                 const d = node.data.token_node;
 
-                try writer.print("global {s} = ", .{ast.tokens.get(d.token).loc.get(ast.src)});
-                try printExpr(writer, ast, ast.nodes.get(d.node));
+                term.setColor(.yellow) catch {};
+                try writer.print("global ", .{});
+                term.setColor(.green) catch {};
+                try writer.print("{s}", .{ast.tokens.get(d.token).loc.get(ast.src)});
+                term.setColor(.reset) catch {};
+                try writer.print(" = ", .{});
+                try printExpr(term, ast, ast.nodes.get(d.node));
                 try writer.print("\n", .{});
             },
             .global_asm => {
-                try writer.print("global_asm {s}\n", .{ast.strings[node.data.str]});
+                term.setColor(.yellow) catch {};
+                try writer.print("global_asm\n", .{});
+                term.setColor(.red) catch {};
+                try writer.print("{s}\n", .{ast.strings[node.data.str]});
+                term.setColor(.reset) catch {};
             },
             else => unreachable,
         }
     }
 }
 
-fn printBlock(writer: *std.Io.Writer, ast: Ast, block: Node, indent: usize) !void {
+fn printBlock(term: std.Io.Terminal, ast: Ast, block: Node, indent: usize) !void {
+    const writer = term.writer;
     const slice = block.data.node_slice;
     const end = slice.first_node + slice.len;
 
@@ -654,15 +671,24 @@ fn printBlock(writer: *std.Io.Writer, ast: Ast, block: Node, indent: usize) !voi
         switch (stat.kind) {
             .stat_assign => {
                 const data = stat.data.token_node;
-                try writer.print("assign {s} = ", .{
+
+                term.setColor(.yellow) catch {};
+                try writer.print("assign ", .{});
+                term.setColor(.green) catch {};
+                try writer.print("{s}", .{
                     ast.tokens.get(data.token).loc.get(ast.src),
                 });
-                try printExpr(writer, ast, ast.nodes.get(data.node));
+                term.setColor(.reset) catch {};
+                try writer.print(" = ", .{});
+
+                try printExpr(term, ast, ast.nodes.get(data.node));
                 try writer.print("\n", .{});
             },
             .stat_ret => {
+                term.setColor(.yellow) catch {};
                 try writer.print("return ", .{});
-                try printExpr(writer, ast, ast.nodes.get(stat.data.node));
+                term.setColor(.reset) catch {};
+                try printExpr(term, ast, ast.nodes.get(stat.data.node));
                 try writer.print("\n", .{});
             },
             .stat_if => {
@@ -670,41 +696,57 @@ fn printBlock(writer: *std.Io.Writer, ast: Ast, block: Node, indent: usize) !voi
                 const then_block = ast.nodes.get(i);
                 const data = stat.data.node_opt_node;
 
+                term.setColor(.yellow) catch {};
                 try writer.print("if ", .{});
-                try printExpr(writer, ast, ast.nodes.get(data.left));
+                term.setColor(.reset) catch {};
+                try printExpr(term, ast, ast.nodes.get(data.left));
                 try writer.print(":\n", .{});
-                try printBlock(writer, ast, then_block, indent + 1);
+                try printBlock(term, ast, then_block, indent + 1);
 
                 if (data.right.unwrap()) |else_block| {
                     for (0..indent) |_| try writer.print("    ", .{});
+                    term.setColor(.yellow) catch {};
                     try writer.print("else:\n", .{});
-                    try printBlock(writer, ast, ast.nodes.get(else_block), indent + 1);
+                    term.setColor(.reset) catch {};
+                    try printBlock(term, ast, ast.nodes.get(else_block), indent + 1);
                 }
             },
             .stat_while => {
                 const data = stat.data.node_node;
                 const body = ast.nodes.get(data.right);
 
+                term.setColor(.yellow) catch {};
                 try writer.print("while ", .{});
-                try printExpr(writer, ast, ast.nodes.get(data.left));
+                term.setColor(.reset) catch {};
+                try printExpr(term, ast, ast.nodes.get(data.left));
                 try writer.print(":\n", .{});
-                try printBlock(writer, ast, body, indent + 1);
+                try printBlock(term, ast, body, indent + 1);
             },
             else => unreachable,
         }
     }
 }
 
-fn printExpr(writer: *std.Io.Writer, ast: Ast, node: Node) !void {
+fn printExpr(term: std.Io.Terminal, ast: Ast, node: Node) !void {
+    const writer = term.writer;
+
     switch (node.kind) {
-        .expr_ident => try writer.print("{s}", .{
-            ast.tokens.get(node.main_token_id).loc.get(ast.src),
-        }),
-        .expr_lit_int => try writer.print("{}", .{node.data.int}),
+        .expr_ident => {
+            term.setColor(.green) catch {};
+            try writer.print("{s}", .{
+                ast.tokens.get(node.main_token_id).loc.get(ast.src),
+            });
+            term.setColor(.reset) catch {};
+        },
+        .expr_lit_int => {
+            term.setColor(.blue) catch {};
+            try writer.print("{}", .{node.data.int});
+            term.setColor(.reset) catch {};
+        },
         .expr_add, .expr_sub, .expr_mul, .expr_div, .expr_equal, .expr_less, .expr_more => {
             const data = node.data.node_node;
             try writer.print("(", .{});
-            try printExpr(writer, ast, ast.nodes.get(data.left));
+            try printExpr(term, ast, ast.nodes.get(data.left));
 
             try writer.print(" {s} ", .{switch (node.kind) {
                 .expr_add => "+",
@@ -717,69 +759,72 @@ fn printExpr(writer: *std.Io.Writer, ast: Ast, node: Node) !void {
                 else => unreachable,
             }});
 
-            try printExpr(writer, ast, ast.nodes.get(data.right));
+            try printExpr(term, ast, ast.nodes.get(data.right));
             try writer.print(")", .{});
         },
         else => unreachable,
     }
 }
 
-pub fn dump(ast: Ast) void {
-    std.debug.print("\n", .{});
+pub fn dump(ast: Ast, term: std.Io.Terminal) !void {
     for (0..ast.nodes.len) |i| {
         const node = ast.nodes.get(i);
 
-        std.debug.print("{}: {s} ", .{
-            i,
-            @tagName(node.kind),
-        });
+        term.setColor(.green) catch {};
+        try term.writer.print("#{} ", .{i});
+        term.setColor(.yellow) catch {};
+        try term.writer.print("{s} ", .{@tagName(node.kind)});
+        term.setColor(.reset) catch {};
 
         switch (node.kind) {
             .root, .block => {
                 const slice = node.data.node_slice;
-                std.debug.print("nodes[{}..][0..{}]", .{ slice.first_node, slice.len });
+                try term.writer.print("nodes[{}..][0..{}]", .{ slice.first_node, slice.len });
             },
             .stat_assign, .global_var => {
                 const data = node.data.token_node;
-                std.debug.print("tokens[{}], node[{}]", .{ data.token, data.node });
+                try term.writer.print("tokens[{}], node[{}]", .{ data.token, data.node });
             },
             .stat_ret => {
-                std.debug.print("nodes[{}]", .{node.data.node});
+                try term.writer.print("nodes[{}]", .{node.data.node});
             },
             .expr_lit_int => {
-                std.debug.print("int({})", .{node.data.int});
+                try term.writer.print("int({})", .{node.data.int});
             },
             .expr_add, .expr_sub, .expr_mul, .expr_div, .expr_equal, .expr_less, .expr_more, .stat_while => {
                 const data = node.data.node_node;
-                std.debug.print("nodes[{}], nodes[{}]", .{ data.left, data.right });
+                try term.writer.print("nodes[{}], nodes[{}]", .{ data.left, data.right });
             },
             .expr_ident => {
-                std.debug.print("tokens[{}]", .{node.main_token_id});
+                try term.writer.print("tokens[{}]", .{node.main_token_id});
             },
             .func => {
                 const d = node.data.token_extra;
                 const func: *Node.Func = @ptrCast(ast.extra_data.ptr + d.extra);
-                std.debug.print("tokens[{}], {any}, param tokens: ", .{ d.token, func });
+                try term.writer.print("tokens[{}], {any}, param tokens: ", .{ d.token, func });
 
                 const first_param = d.extra + sizeInExtraData(Node.Func);
                 for (0..func.param_count) |param_id| {
+                    if (param_id != 0) try term.writer.print(", ", .{});
                     const param: *Node.Param = @ptrCast(ast.extra_data.ptr + first_param + param_id);
-                    std.debug.print("{}, ", .{param.token});
+                    try term.writer.print("#{}", .{param.token});
                 }
             },
             .stat_if => {
-                std.debug.print("nodes[{}], ", .{node.data.node_opt_node.left});
+                try term.writer.print("nodes[{}], ", .{node.data.node_opt_node.left});
                 if (node.data.node_opt_node.right.unwrap()) |x| {
-                    std.debug.print("nodes[{}]", .{x});
+                    try term.writer.print("nodes[{}]", .{x});
                 } else {
-                    std.debug.print("null", .{});
+                    try term.writer.print("null", .{});
                 }
             },
             .global_asm => {
-                std.debug.print("\"{s}\"", .{ast.strings[node.data.str]});
+                term.setColor(.red) catch {};
+                try term.writer.print("\n{s}", .{ast.strings[node.data.str]});
+                term.setColor(.reset) catch {};
             },
         }
 
-        std.debug.print("\n", .{});
+        try term.writer.print("\n", .{});
     }
 }

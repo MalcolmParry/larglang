@@ -97,12 +97,18 @@ pub fn getTokens(alloc: std.mem.Allocator, src: []const u8) !TokenList {
     return tokens.slice();
 }
 
-pub fn dumpTokens(tokens: TokenList, src: []const u8) void {
-    for (tokens.items(.kind), tokens.items(.loc)) |kind, loc| {
-        std.log.info("{s}: '{s}'", .{
-            @tagName(kind),
-            loc.get(src),
-        });
+pub fn dumpTokens(term: std.Io.Terminal, tokens: TokenList, src: []const u8) !void {
+    const writer = term.writer;
+
+    for (tokens.items(.kind), tokens.items(.loc), 0..) |kind, loc, i| {
+        term.setColor(.green) catch {};
+        try writer.print("#{}", .{i});
+
+        term.setColor(.yellow) catch {};
+        try writer.print(" {s}", .{@tagName(kind)});
+
+        term.setColor(.reset) catch {};
+        try writer.print(": '{s}'\n", .{loc.get(src)});
     }
 }
 

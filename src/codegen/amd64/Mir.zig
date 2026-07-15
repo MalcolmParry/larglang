@@ -148,15 +148,21 @@ pub const ValueRef = packed struct(u32) {
     };
 };
 
-pub fn format(mir: Mir, writer: *std.Io.Writer) !void {
+pub fn print(mir: Mir, term: std.Io.Terminal) !void {
+    const writer = term.writer;
     try writer.print("fn '{s}':\n", .{mir.link_sym});
 
     for (mir.blocks.items, 0..) |block, block_id| {
-        try writer.print("@{}(", .{block_id});
+        term.setColor(.red) catch {};
+        try writer.print("@{}", .{block_id});
+        term.setColor(.reset) catch {};
+        try writer.print("(", .{});
 
         for (0..block.arg_count) |arg_id| {
             if (arg_id != 0) try writer.print(", ", .{});
+            term.setColor(.magenta) catch {};
             try writer.print("%{}", .{arg_id});
+            term.setColor(.reset) catch {};
         }
 
         try writer.print("):\n", .{});
@@ -164,68 +170,96 @@ pub fn format(mir: Mir, writer: *std.Io.Writer) !void {
         for (0..block.insts.len) |inst_id| {
             const inst = block.insts.get(inst_id);
 
-            try writer.print("${} = {s} ", .{ inst_id, @tagName(inst.tag) });
+            term.setColor(.green) catch {};
+            try writer.print("${}", .{inst_id});
+            term.setColor(.reset) catch {};
+            try writer.print(" = ", .{});
+            term.setColor(.yellow) catch {};
+            try writer.print("{s} ", .{@tagName(inst.tag)});
+            term.setColor(.reset) catch {};
+
             switch (inst.tag) {
                 .no_op => {},
-                .load => try printValRef(writer, mir, inst.data.unary),
+                .load => try printValRef(term, mir, inst.data.unary),
                 .add, .sub, .mul, .udiv, .cmp_ult, .cmp_eq, .cmp_ugt, .store => {
                     const data = inst.data.bin;
-                    try printValRef(writer, mir, data.left);
+                    try printValRef(term, mir, data.left);
                     try writer.print(", ", .{});
-                    try printValRef(writer, mir, data.right);
+                    try printValRef(term, mir, data.right);
                 },
             }
 
             try writer.print("\n", .{});
         }
 
+        term.setColor(.yellow) catch {};
         switch (block.term) {
             .none => try writer.print("no terminator", .{}),
             .jmp => |jmp| {
                 try writer.print("jmp ", .{});
-                try printJmp(writer, mir, jmp);
+                try printJmp(term, mir, jmp);
             },
             .ret => |ref| {
                 try writer.print("ret ", .{});
-                try printValRef(writer, mir, ref);
+                try printValRef(term, mir, ref);
             },
             .branch_bool => |b| {
                 try writer.print("branch_bool ", .{});
-                try printValRef(writer, mir, b.cond);
+                try printValRef(term, mir, b.cond);
                 try writer.print(" ? ", .{});
-                try printJmp(writer, mir, b.then_jmp);
+                try printJmp(term, mir, b.then_jmp);
                 try writer.print(" : ", .{});
-                try printJmp(writer, mir, b.else_jmp);
+                try printJmp(term, mir, b.else_jmp);
             },
             .branch_cmp => |b| {
-                try writer.print("branch_cmp (", .{});
-                try printValRef(writer, mir, b.left);
+                try writer.print("branch_cmp", .{});
+                term.setColor(.reset) catch {};
+                try writer.print(" (", .{});
+
+                try printValRef(term, mir, b.left);
+                term.setColor(.yellow) catch {};
                 try writer.print(" {s} ", .{@tagName(b.cond)});
-                try printValRef(writer, mir, b.right);
+                try printValRef(term, mir, b.right);
                 try writer.print(") ? ", .{});
-                try printJmp(writer, mir, b.then_jmp);
+                try printJmp(term, mir, b.then_jmp);
                 try writer.print(" : ", .{});
-                try printJmp(writer, mir, b.else_jmp);
+                try printJmp(term, mir, b.else_jmp);
             },
         }
 
+        term.setColor(.reset) catch {};
         try writer.print("\n\n", .{});
     }
 }
 
-fn printJmp(writer: *std.Io.Writer, mir: Mir, jmp: Term.Jmp) !void {
-    try writer.print("@{}(", .{jmp.block_id});
+fn printJmp(term: std.Io.Terminal, mir: Mir, jmp: Term.Jmp) !void {
+    const writer = term.writer;
+
+    term.setColor(.red) catch {};
+    try writer.print("@{}", .{jmp.block_id});
+    term.setColor(.reset) catch {};
+    try writer.print("(", .{});
+
     for (jmp.args.items, 0..) |ref, arg_id| {
         if (arg_id != 0) try writer.print(", ", .{});
-        try printValRef(writer, mir, ref);
+        try printValRef(term, mir, ref);
     }
     try writer.print(")", .{});
 }
 
-fn printValRef(writer: *std.Io.Writer, mir: Mir, ref: ValueRef) !void {
+fn printValRef(term: std.Io.Terminal, mir: Mir, ref: ValueRef) !void {
+    const writer = term.writer;
+    term.setColor(switch (ref.tag) {
+        .inst => .green,
+        .arg => .magenta,
+        .imm => .blue,
+    }) catch {};
+
     switch (ref.tag) {
         .inst => try writer.print("${}", .{ref.id}),
         .arg => try writer.print("%{}", .{ref.id}),
-        .imm => try writer.print("{f}", .{mir.imms.items[ref.id]}),
+        .imm => try mir.imms.items[ref.id].print(term),
     }
+
+    term.setColor(.reset) catch {};
 }

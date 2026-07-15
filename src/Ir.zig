@@ -190,14 +190,20 @@ pub const Inst = struct {
     }
 };
 
-pub fn format(ir: Ir, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+pub fn print(ir: Ir, term: std.Io.Terminal) std.Io.Writer.Error!void {
+    const writer = term.writer;
     try writer.print("fn '{s}':\n", .{ir.link_sym});
 
     for (ir.blocks.items, 0..) |block, block_id| {
-        try writer.print("@{}(", .{block_id});
+        term.setColor(.red) catch {};
+        try writer.print("@{}", .{block_id});
+        term.setColor(.reset) catch {};
 
+        try writer.print("(", .{});
         for (0..block.arg_count) |arg_id| {
+            term.setColor(.magenta) catch {};
             try writer.print("%{}", .{arg_id});
+            term.setColor(.reset) catch {};
 
             if (arg_id != block.arg_count - 1)
                 try writer.print(", ", .{});
@@ -206,54 +212,66 @@ pub fn format(ir: Ir, writer: *std.Io.Writer) std.Io.Writer.Error!void {
         try writer.print("):\n", .{});
 
         for (block.insts.items, 0..) |inst, inst_id| {
-            try writer.print("${} = {s} ", .{ inst_id, @tagName(inst.tag) });
+            term.setColor(.green) catch {};
+            try writer.print("${}", .{inst_id});
+            term.setColor(.reset) catch {};
+            try writer.print(" = ", .{});
+            term.setColor(.yellow) catch {};
+            try writer.print("{s} ", .{@tagName(inst.tag)});
+            term.setColor(.reset) catch {};
 
             switch (inst.tag.getDataKind()) {
                 .none => {},
                 .unary => {
-                    try printValRef(writer, ir, inst.data.unary);
+                    try printValRef(term, ir, inst.data.unary);
                 },
                 .bin => {
                     const bin = inst.data.bin;
-                    try printValRef(writer, ir, bin.left);
+                    try printValRef(term, ir, bin.left);
                     try writer.print(", ", .{});
-                    try printValRef(writer, ir, bin.right);
+                    try printValRef(term, ir, bin.right);
                 },
             }
 
             try writer.print("\n", .{});
         }
 
+        term.setColor(.yellow) catch {};
         switch (block.terminator) {
             .none => try writer.print("block under construction", .{}),
             .dead => try writer.print("dead block", .{}),
             .ret => |val| {
                 try writer.print("ret ", .{});
-                try printValRef(writer, ir, val);
+                try printValRef(term, ir, val);
             },
             .jmp => |jmp| {
                 try writer.print("jmp ", .{});
-                try printJmp(writer, ir, jmp);
+                try printJmp(term, ir, jmp);
             },
             .branch => |branch| {
                 try writer.print("branch ", .{});
-                try printValRef(writer, ir, branch.condition);
+                try printValRef(term, ir, branch.condition);
                 try writer.print(" ? ", .{});
-                try printJmp(writer, ir, branch.true_jmp);
+                try printJmp(term, ir, branch.true_jmp);
                 try writer.print(" : ", .{});
-                try printJmp(writer, ir, branch.false_jmp);
+                try printJmp(term, ir, branch.false_jmp);
             },
         }
 
+        term.setColor(.reset) catch {};
         try writer.print("\n\n", .{});
     }
 }
 
-fn printJmp(writer: *std.Io.Writer, ir: Ir, jmp: Terminator.Jmp) !void {
-    try writer.print("@{}(", .{jmp.block_id});
+fn printJmp(term: std.Io.Terminal, ir: Ir, jmp: Terminator.Jmp) !void {
+    const writer = term.writer;
+    term.setColor(.red) catch {};
+    try writer.print("@{}", .{jmp.block_id});
+    term.setColor(.reset) catch {};
+    try writer.print("(", .{});
 
     for (jmp.args.items, 0..) |arg, i| {
-        try printValRef(writer, ir, arg);
+        try printValRef(term, ir, arg);
 
         if (i != jmp.args.items.len - 1)
             try writer.print(", ", .{});
@@ -262,10 +280,19 @@ fn printJmp(writer: *std.Io.Writer, ir: Ir, jmp: Terminator.Jmp) !void {
     try writer.print(")", .{});
 }
 
-fn printValRef(writer: *std.Io.Writer, ir: Ir, ref: ValueRef) !void {
+fn printValRef(term: std.Io.Terminal, ir: Ir, ref: ValueRef) !void {
+    const writer = term.writer;
+    term.setColor(switch (ref.tag) {
+        .inst => .green,
+        .arg => .magenta,
+        .imm => .blue,
+    }) catch {};
+
     switch (ref.tag) {
         .inst => try writer.print("${}", .{ref.data}),
         .arg => try writer.print("%{}", .{ref.data}),
-        .imm => try writer.print("{f}", .{ir.imms.items[ref.data]}),
+        .imm => try ir.imms.items[ref.data].print(term),
     }
+
+    term.setColor(.reset) catch {};
 }

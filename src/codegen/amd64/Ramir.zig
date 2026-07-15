@@ -167,7 +167,6 @@ pub const Mem = struct {
     pub const Base = union(enum) {
         none,
         reg: Reg,
-        block: Block.Id,
         global: CompUnit.Global.Ref,
     };
 
@@ -199,34 +198,72 @@ pub const Mem = struct {
     };
 };
 
-pub fn format(ramir: Ramir, writer: *std.Io.Writer) !void {
+pub fn print(ramir: Ramir, term: std.Io.Terminal) !void {
+    const writer = term.writer;
     try writer.print("fn '{s}':\n", .{ramir.link_sym});
 
     for (ramir.blocks.items, 0..) |block, block_id| {
-        try writer.print("@{}:\n", .{block_id});
+        term.setColor(.red) catch {};
+        try writer.print("@{}", .{block_id});
+        term.setColor(.reset) catch {};
+        try writer.print(":\n", .{});
 
         for (0..block.insts.len) |inst_id| {
             const inst = block.insts.get(inst_id);
 
+            term.setColor(.yellow) catch {};
             try writer.print("{s} ", .{@tagName(inst.tag)});
+            term.setColor(.reset) catch {};
 
             switch (inst.data_kind) {
                 .none => {},
                 .u16 => try writer.print("{}", .{inst.data.u16}),
-                .c_u16 => try writer.print("{s} {}", .{ @tagName(inst.data.c_u16.cond), inst.data.c_u16.int }),
-                .r => try writer.print("{s}", .{@tagName(inst.data.r)}),
-                .rr => try writer.print("{s}, {s}", .{ @tagName(inst.data.rr.r1), @tagName(inst.data.rr.r2) }),
-                .ri => try writer.print("{s}, {}", .{ @tagName(inst.data.ri.r), ramir.imms.items[inst.data.ri.i] }),
-                .m => try printMem(writer, inst.data.m),
+                .c_u16 => {
+                    term.setColor(.yellow) catch {};
+                    try writer.print("{s}", .{@tagName(inst.data.c_u16.cond)});
+                    term.setColor(.reset) catch {};
+                    try writer.print(" {}", .{inst.data.c_u16.int});
+                },
+                .r => {
+                    term.setColor(.cyan) catch {};
+                    try writer.print("{s}", .{@tagName(inst.data.r)});
+                },
+                .rr => {
+                    const d = inst.data.rr;
+
+                    term.setColor(.cyan) catch {};
+                    try writer.print("{s}", .{@tagName(d.r1)});
+                    term.setColor(.reset) catch {};
+                    try writer.print(", ", .{});
+                    term.setColor(.cyan) catch {};
+                    try writer.print("{s}", .{@tagName(d.r2)});
+                },
+                .ri => {
+                    const d = inst.data.ri;
+
+                    term.setColor(.cyan) catch {};
+                    try writer.print("{s}", .{@tagName(d.r)});
+                    term.setColor(.reset) catch {};
+                    try writer.print(", ", .{});
+                    try ramir.imms.items[d.i].print(term);
+                },
+                .m => try printMem(term, inst.data.m),
                 .rm => {
                     const d = inst.data.rm;
-                    try writer.print("{s}, ", .{@tagName(d.r)});
-                    try printMem(writer, d.m);
+
+                    term.setColor(.cyan) catch {};
+                    try writer.print("{s}", .{@tagName(d.r)});
+                    term.setColor(.reset) catch {};
+                    try writer.print(", ", .{});
+                    try printMem(term, d.m);
                 },
                 .mr => {
                     const d = inst.data.rm;
-                    try printMem(writer, d.m);
-                    try writer.print(", {s}", .{@tagName(d.r)});
+
+                    try printMem(term, d.m);
+                    try writer.print(", ", .{});
+                    term.setColor(.cyan) catch {};
+                    try writer.print("{s}", .{@tagName(d.r)});
                 },
                 .cr => {
                     const d = inst.data.cr;
@@ -235,48 +272,89 @@ pub fn format(ramir: Ramir, writer: *std.Io.Writer) !void {
                 .cm => {
                     const d = inst.data.cm;
                     try writer.print("{s} ? ", .{@tagName(d.c)});
-                    try printMem(writer, d.m);
+                    try printMem(term, d.m);
                 },
             }
 
+            term.setColor(.reset) catch {};
             try writer.print("\n", .{});
         }
 
+        term.setColor(.yellow) catch {};
         switch (block.term) {
             .none => try writer.print("no terminator", .{}),
             .not_reachable => try writer.print("unreachable", .{}),
-            .jmp => |target| try writer.print("jmp [@{}]", .{target}),
-            .branch => |b| try writer.print("branch {s} ? @{} : @{}", .{ @tagName(b.cond), b.then_jmp, b.else_jmp }),
+            .jmp => |target| {
+                try writer.print("jmp ", .{});
+                term.setColor(.red) catch {};
+                try writer.print("@{}", .{target});
+            },
+            .branch => |b| {
+                try writer.print("branch {s}", .{@tagName(b.cond)});
+                term.setColor(.reset) catch {};
+                try writer.print(" ? ", .{});
+                term.setColor(.red) catch {};
+                try writer.print("@{}", .{b.then_jmp});
+                term.setColor(.reset) catch {};
+                try writer.print(" : ", .{});
+                term.setColor(.red) catch {};
+                try writer.print("@{}", .{b.else_jmp});
+            },
         }
 
+        term.setColor(.reset) catch {};
         try writer.print("\n\n", .{});
     }
 }
 
-fn printMem(writer: *std.Io.Writer, mem: Mem) !void {
+fn printMem(term: std.Io.Terminal, mem: Mem) !void {
+    const writer = term.writer;
+    term.setColor(.reset) catch {};
     try writer.print("[", .{});
 
     switch (mem.base) {
         .none => {},
-        .reg => |reg| try writer.print("{s} + ", .{@tagName(reg)}),
-        .block => |block_id| try writer.print("@{} + ", .{block_id}),
-        .global => |global_id| try writer.print("g{} + ", .{global_id}),
-    }
-
-    switch (mem.mod) {
-        .off => |off| try writer.print("0x{x}", .{off}),
-        .rm => |rm| {
-            try writer.print("{s}", .{@tagName(rm.index)});
-
-            if (rm.scale != .@"1") try writer.print(" * {}", .{rm.scale.toFactor()});
-
-            if (rm.disp > 0) {
-                try writer.print(" + 0x{x}", .{rm.disp});
-            } else if (rm.disp < 0) {
-                try writer.print(" - 0x{x}", .{-rm.disp});
-            }
+        .reg => |reg| {
+            term.setColor(.cyan) catch {};
+            try writer.print("{s}", .{@tagName(reg)});
+            term.setColor(.reset) catch {};
+            try writer.print(" + ", .{});
+        },
+        .global => |global_id| {
+            try CompUnit.Immediate.print(.{ .global_addr = global_id }, term);
+            term.setColor(.reset) catch {};
+            try writer.print(" + ", .{});
         },
     }
 
+    switch (mem.mod) {
+        .off => |off| {
+            term.setColor(.blue) catch {};
+            try writer.print("0x{x}", .{off});
+        },
+        .rm => |rm| {
+            term.setColor(.cyan) catch {};
+            try writer.print("{s}", .{@tagName(rm.index)});
+
+            if (rm.scale != .@"1") {
+                term.setColor(.reset) catch {};
+                try writer.print(" * ", .{});
+                term.setColor(.blue) catch {};
+                try writer.print(" * {}", .{rm.scale.toFactor()});
+            }
+
+            term.setColor(.reset) catch {};
+            if (rm.disp > 0) {
+                try writer.print(" + ", .{});
+            } else if (rm.disp < 0) {
+                try writer.print(" - ", .{});
+            }
+
+            term.setColor(.blue) catch {};
+            try writer.print("0x{x}", .{@abs(rm.disp)});
+        },
+    }
+
+    term.setColor(.reset) catch {};
     try writer.print("]", .{});
 }
