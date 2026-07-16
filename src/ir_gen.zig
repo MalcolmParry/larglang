@@ -14,6 +14,8 @@ pub fn compileAst(alloc: std.mem.Allocator, ast: Ast) !CompUnit {
         .globals = .empty,
         .export_symbols = .empty,
         .global_asm = .empty,
+        .data = .empty,
+        .global_constants = .empty,
     };
     errdefer comp_unit.deinit(alloc);
 
@@ -98,6 +100,18 @@ pub fn compileAst(alloc: std.mem.Allocator, ast: Ast) !CompUnit {
 
                 const str = ast.strings[node.data.str];
                 try comp_unit.global_asm.append(alloc, str);
+            },
+            .strdef => {
+                tl_i += 1;
+
+                const d = node.data.token_str;
+                const str = ast.strings[d.str];
+                const addr_name = ast.tokens.items(.loc)[node.main_token_id].get(ast.src);
+                const len_name = ast.tokens.items(.loc)[d.token].get(ast.src);
+
+                try comp_unit.global_constants.put(alloc, addr_name, .{ .data_addr = @intCast(comp_unit.data.items.len) });
+                try comp_unit.global_constants.put(alloc, len_name, .{ .int = str.len });
+                try comp_unit.data.append(alloc, str);
             },
             else => unreachable,
         }
@@ -336,6 +350,10 @@ pub fn compileExpr(alloc: std.mem.Allocator, ast: Ast, comp_unit: CompUnit, ir: 
 
             if (comp_unit.globals.getIndex(name)) |global_ref| {
                 return try block.appendInst(alloc, .unary(.load, try ir.appendImm(alloc, .{ .global_addr = @intCast(global_ref) })));
+            }
+
+            if (comp_unit.global_constants.get(name)) |val| {
+                return try ir.appendImm(alloc, val);
             }
 
             return ident_map.get(name) orelse error.CompileFailed;

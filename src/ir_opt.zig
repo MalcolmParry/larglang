@@ -66,6 +66,7 @@ pub fn getImmediate(ir: *const Ir, ref: ValueRef) ?u64 {
             return switch (val) {
                 .int => |int| int,
                 .global_addr => null,
+                .data_addr => null,
             };
         },
     };

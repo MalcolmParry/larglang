@@ -45,6 +45,11 @@ pub const Node = struct {
         global_var,
         /// uses data.str
         global_asm,
+        /// uses data.token_str
+        /// string address in main_token_id
+        /// string length in data.token_str.token
+        /// string index in data.token_str.str
+        strdef,
 
         /// uses data.token_node
         stat_assign,
@@ -84,6 +89,7 @@ pub const Node = struct {
         node_opt_node: NodeAndOptNode,
         token_extra: TokenAndExtra,
         str: StrIndex,
+        token_str: TokenAndStrIndex,
 
         pub const NodeSlice = struct {
             first_node: Index,
@@ -108,6 +114,11 @@ pub const Node = struct {
         pub const TokenAndExtra = struct {
             token: TokenIndex,
             extra: u32,
+        };
+
+        pub const TokenAndStrIndex = struct {
+            token: TokenIndex,
+            str: StrIndex,
         };
     };
 
@@ -189,6 +200,29 @@ pub fn parse(alloc: std.mem.Allocator, src: []const u8, tokens: TokenList) !Ast 
                     .kind = .global_asm,
                     .main_token_id = main_token_id,
                     .data = .{ .str = str_id },
+                });
+            },
+            .kw_strdef => {
+                _ = try parser.popExpectToken(.kw_strdef);
+
+                const addr_id = parser.head;
+                _ = try parser.popExpectToken(.ident);
+
+                _ = try parser.popExpectToken(.comma);
+                const len_id = parser.head;
+                _ = try parser.popExpectToken(.ident);
+
+                _ = try parser.popExpectToken(.equal);
+                const str_id = try parser.parseString();
+                _ = try parser.popExpectToken(.semicolon);
+
+                try tl_nodes.append(alloc, .{
+                    .kind = .strdef,
+                    .main_token_id = addr_id,
+                    .data = .{ .token_str = .{
+                        .token = len_id,
+                        .str = str_id,
+                    } },
                 });
             },
             .eof => break,
@@ -653,6 +687,20 @@ pub fn print(ast: Ast, term: std.Io.Terminal) !void {
                 try writer.print("{s}\n", .{ast.strings[node.data.str]});
                 term.setColor(.reset) catch {};
             },
+            .strdef => {
+                const d = node.data.token_str;
+                term.setColor(.yellow) catch {};
+                try writer.print("strdef ", .{});
+                term.setColor(.green) catch {};
+                try writer.print("{s}", .{ast.tokens.get(node.main_token_id).loc.get(ast.src)});
+                term.setColor(.reset) catch {};
+                try writer.print(", ", .{});
+                term.setColor(.green) catch {};
+                try writer.print("{s}", .{ast.tokens.get(d.token).loc.get(ast.src)});
+                term.setColor(.red) catch {};
+                try writer.print("\n{s}\n", .{ast.strings[d.str]});
+                term.setColor(.reset) catch {};
+            },
             else => unreachable,
         }
     }
@@ -821,6 +869,13 @@ pub fn dump(ast: Ast, term: std.Io.Terminal) !void {
             .global_asm => {
                 term.setColor(.red) catch {};
                 try term.writer.print("\n{s}", .{ast.strings[node.data.str]});
+                term.setColor(.reset) catch {};
+            },
+            .strdef => {
+                const d = node.data.token_str;
+                try term.writer.print("tokens[{}], tokens[{}]\n", .{ node.main_token_id, d.token });
+                term.setColor(.red) catch {};
+                try term.writer.print("{s}", .{ast.strings[d.str]});
                 term.setColor(.reset) catch {};
             },
         }

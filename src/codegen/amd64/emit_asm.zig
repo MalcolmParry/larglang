@@ -42,6 +42,14 @@ pub fn emit(writer: *std.Io.Writer, comp_unit: CompUnit) !void {
         , .{ kv.key_ptr.*, kv.value_ptr.initial_value });
     }
 
+    for (comp_unit.data.items, 0..) |data, id| {
+        try writer.print(
+            \\D{}:
+            \\    .ascii "{s}"
+            \\
+        , .{ id, data });
+    }
+
     for (comp_unit.global_asm.items) |str| {
         try writer.print("\n{s}\n", .{str});
     }
@@ -119,6 +127,7 @@ fn printImm(writer: *std.Io.Writer, comp_unit: CompUnit, ramir: Ramir, imm: Rami
     switch (val) {
         .int => |int| try writer.print("{}", .{int}),
         .global_addr => |global_ref| try writer.print("{s}", .{comp_unit.globals.keys()[global_ref]}),
+        .data_addr => |data_addr| try writer.print("offset D{}", .{data_addr}),
     }
 }
 

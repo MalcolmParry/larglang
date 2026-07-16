@@ -123,7 +123,29 @@ pub fn emitRamir(alloc: std.mem.Allocator, mir: Mir) !Ramir {
                     try putGlobalRefInReg(alloc, map.*, &ra_block, .rcx, globalRefFromLocal(@intCast(block_id), bin.right));
 
                     switch (inst.tag) {
-                        .udiv => @panic("not implemented"),
+                        .udiv => {
+                            try ra_block.insts.append(alloc, .{
+                                .tag = .xor,
+                                .data_kind = .rr,
+                                .data = .{ .rr = .{
+                                    .r1 = .edx,
+                                    .r2 = .edx,
+                                } },
+                            });
+
+                            try ra_block.insts.append(alloc, .{
+                                .tag = .div,
+                                .data_kind = .r,
+                                .data = .{ .r = .rcx },
+                            });
+
+                            try storeRegInAlloc(alloc, &ra_block, .rax, map.get(.{
+                                .inst = .{
+                                    .block = @intCast(block_id),
+                                    .id = @intCast(inst_id),
+                                },
+                            }) orelse unreachable);
+                        },
                         .add, .sub, .mul => {
                             const tag: Ramir.Inst.Tag = switch (inst.tag) {
                                 .add => .add,

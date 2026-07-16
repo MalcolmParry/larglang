@@ -41,7 +41,7 @@ pub const Inst = struct {
         add,
         sub,
         mul,
-        udiv,
+        div,
 
         setcc,
         ret,

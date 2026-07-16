@@ -23,6 +23,7 @@ pub fn build(b: *std.Build) void {
 
     const comp_test_step = b.step("comp-test", "");
     const comp_test_asm_emit = b.addRunArtifact(exe);
+    comp_test_asm_emit.addFileInput(b.path("test.larg"));
     comp_test_asm_emit.addArgs(&.{ "test.larg", "-o" });
     const asm_file = comp_test_asm_emit.addOutputFileArg("test.s");
 

@@ -47,6 +47,9 @@
 // }
 
 thing = 5;
+strdef msg, len =
+\\hello world
+;
 
 fn test4(n) {
 	thing = thing + n;
@@ -67,6 +70,11 @@ asm(
 	\\.section .text
 	\\.global _start
 	\\_start:
+	\\	mov rax, 1
+	\\	mov rdi, 2
+	\\	lea rsi, [rip + D0]
+	\\	mov rdx, 11
+	\\	syscall
 	\\	mov rdi, 7
 	\\	call test4
 	\\	mov rdi, rax

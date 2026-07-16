@@ -8,7 +8,10 @@ funcs: std.StringArrayHashMapUnmanaged(Func),
 globals: std.StringArrayHashMapUnmanaged(Global),
 export_symbols: std.StringHashMapUnmanaged(void),
 global_asm: std.ArrayList([]u8),
+global_constants: std.StringHashMapUnmanaged(Immediate),
+data: std.ArrayList([]const u8),
 
+pub const DataAddrRef = u32;
 pub const Func = struct {
     ir: Ir,
     mir: ?Mir,
@@ -30,16 +33,21 @@ pub const Global = struct {
 pub const Immediate = union(enum) {
     int: u64,
     global_addr: Global.Ref,
+    data_addr: DataAddrRef,
 
     pub fn equal(left: Immediate, right: Immediate) bool {
         return switch (left) {
             .int => |lval| switch (right) {
                 .int => |rval| lval == rval,
-                .global_addr => false,
+                else => false,
             },
-            .global_addr => |lval| switch (left) {
-                .int => false,
+            .global_addr => |lval| switch (right) {
                 .global_addr => |rval| lval == rval,
+                else => false,
+            },
+            .data_addr => |lval| switch (right) {
+                .data_addr => |rval| lval == rval,
+                else => false,
             },
         };
     }
@@ -49,11 +57,13 @@ pub const Immediate = union(enum) {
         term.setColor(switch (imm) {
             .int => .blue,
             .global_addr => .white,
+            .data_addr => .yellow,
         }) catch {};
 
         switch (imm) {
             .int => |val| try writer.print("{}", .{val}),
             .global_addr => |global_ref| try writer.print("g{}", .{global_ref}),
+            .data_addr => |data_addr_ref| try writer.print("d{}", .{data_addr_ref}),
         }
 
         term.setColor(.reset) catch {};
@@ -67,4 +77,6 @@ pub fn deinit(unit: *CompUnit, alloc: std.mem.Allocator) void {
     unit.globals.deinit(alloc);
     unit.export_symbols.deinit(alloc);
     unit.global_asm.deinit(alloc);
+    unit.global_constants.deinit(alloc);
+    unit.data.deinit(alloc);
 }

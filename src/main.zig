@@ -128,6 +128,7 @@ fn compile(info: CompInfo) !void {
     const alloc = info.alloc;
     const src = info.src;
     const debug = info.debug;
+    errdefer info.debug.writer.flush() catch {};
 
     var tokens = try Lexer.getTokens(alloc, src);
     defer tokens.deinit(alloc);
