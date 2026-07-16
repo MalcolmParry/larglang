@@ -3,17 +3,22 @@ const CompUnit = @import("../../CompUnit.zig");
 const Ramir = @import("Ramir.zig");
 
 pub fn emit(writer: *std.Io.Writer, comp_unit: CompUnit) !void {
+    try writer.print(
+        \\.intel_syntax noprefix
+        \\.code64
+        \\
+    , .{});
+
     var export_iter = comp_unit.export_symbols.keyIterator();
     while (export_iter.next()) |sym| {
         try writer.print(
-            \\global {s}
+            \\.global {s}
             \\
         , .{sym.*});
     }
 
     try writer.print(
-        \\section .text
-        \\bits 64
+        \\.section .text
         \\
     , .{});
 
@@ -24,7 +29,7 @@ pub fn emit(writer: *std.Io.Writer, comp_unit: CompUnit) !void {
     }
 
     try writer.print(
-        \\section .data
+        \\.section .data
         \\
     , .{});
 
@@ -32,7 +37,7 @@ pub fn emit(writer: *std.Io.Writer, comp_unit: CompUnit) !void {
     while (global_iter.next()) |kv| {
         try writer.print(
             \\{s}:
-            \\    dq {}
+            \\    .quad {}
             \\
         , .{ kv.key_ptr.*, kv.value_ptr.initial_value });
     }

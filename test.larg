@@ -64,8 +64,8 @@ fn test4(n) {
 }
 
 asm(
-	\\section .text
-	\\global _start
+	\\.section .text
+	\\.global _start
 	\\_start:
 	\\	mov rdi, 7
 	\\	call test4
