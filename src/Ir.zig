@@ -5,11 +5,13 @@ const Ir = @This();
 link_sym: []const u8,
 blocks: std.ArrayList(Block),
 imms: std.ArrayList(CompUnit.Immediate),
+extra_val_refs: std.ArrayList(ValueRef),
 
 pub fn deinit(func: *Ir, alloc: std.mem.Allocator) void {
     for (func.blocks.items) |*block| block.deinit(alloc);
     func.blocks.deinit(alloc);
     func.imms.deinit(alloc);
+    func.extra_val_refs.deinit(alloc);
 }
 
 pub fn appendImm(func: *Ir, alloc: std.mem.Allocator, val: CompUnit.Immediate) !ValueRef {
@@ -137,17 +139,20 @@ pub const Inst = struct {
         load,
         store,
 
+        call,
+
         pub fn getDataKind(tag: Tag) Data.Kind {
             return switch (tag) {
                 .no_op => .none,
                 .add, .sub, .mul, .div, .equal, .less, .more, .store => .bin,
                 .load => .unary,
+                .call => .val_ref_list,
             };
         }
 
         pub fn hasSideEffects(tag: Tag) bool {
             return switch (tag) {
-                .store => true,
+                .store, .call => true,
                 else => false,
             };
         }
@@ -156,17 +161,25 @@ pub const Inst = struct {
     pub const Data = union {
         unary: ValueRef,
         bin: BinOp,
+        val_ref_list: ValRefList,
 
         pub const Kind = enum {
             none,
             unary,
             bin,
+            val_ref_list,
         };
     };
 
     pub const BinOp = struct {
         left: ValueRef,
         right: ValueRef,
+    };
+
+    pub const ValRefList = struct {
+        /// in extra array
+        start: u16,
+        len: u16,
     };
 
     pub const noop: Inst = .{ .tag = .no_op, .data = undefined };
@@ -230,6 +243,15 @@ pub fn print(ir: Ir, term: std.Io.Terminal) std.Io.Writer.Error!void {
                     try printValRef(term, ir, bin.left);
                     try writer.print(", ", .{});
                     try printValRef(term, ir, bin.right);
+                },
+                .val_ref_list => {
+                    const d = inst.data.val_ref_list;
+                    const slice = ir.extra_val_refs.items[d.start..][0..d.len];
+
+                    for (slice, 0..) |ref, i| {
+                        if (i != 0) try writer.print(", ", .{});
+                        try printValRef(term, ir, ref);
+                    }
                 },
             }
 

@@ -10,8 +10,11 @@ export_symbols: std.StringHashMapUnmanaged(void),
 global_asm: std.ArrayList([]u8),
 global_constants: std.StringHashMapUnmanaged(Immediate),
 data: std.ArrayList([]const u8),
+extern_labels: std.StringArrayHashMapUnmanaged(void),
 
 pub const DataAddrRef = u32;
+pub const LabelRef = u32;
+pub const FuncRef = u32;
 pub const Func = struct {
     ir: Ir,
     mir: ?Mir,
@@ -34,22 +37,11 @@ pub const Immediate = union(enum) {
     int: u64,
     global_addr: Global.Ref,
     data_addr: DataAddrRef,
+    func_addr: FuncRef,
+    label_addr: LabelRef,
 
     pub fn equal(left: Immediate, right: Immediate) bool {
-        return switch (left) {
-            .int => |lval| switch (right) {
-                .int => |rval| lval == rval,
-                else => false,
-            },
-            .global_addr => |lval| switch (right) {
-                .global_addr => |rval| lval == rval,
-                else => false,
-            },
-            .data_addr => |lval| switch (right) {
-                .data_addr => |rval| lval == rval,
-                else => false,
-            },
-        };
+        return std.meta.eql(left, right);
     }
 
     pub fn print(imm: Immediate, term: std.Io.Terminal) !void {
@@ -58,12 +50,15 @@ pub const Immediate = union(enum) {
             .int => .blue,
             .global_addr => .white,
             .data_addr => .yellow,
+            .func_addr, .label_addr => .green,
         }) catch {};
 
         switch (imm) {
             .int => |val| try writer.print("{}", .{val}),
             .global_addr => |global_ref| try writer.print("g{}", .{global_ref}),
             .data_addr => |data_addr_ref| try writer.print("d{}", .{data_addr_ref}),
+            .func_addr => |x| try writer.print("f{}", .{x}),
+            .label_addr => |x| try writer.print("l{}", .{x}),
         }
 
         term.setColor(.reset) catch {};
@@ -79,4 +74,5 @@ pub fn deinit(unit: *CompUnit, alloc: std.mem.Allocator) void {
     unit.global_asm.deinit(alloc);
     unit.global_constants.deinit(alloc);
     unit.data.deinit(alloc);
+    unit.extern_labels.deinit(alloc);
 }

@@ -46,6 +46,7 @@
 //     return sum;
 // }
 
+label print;
 thing = 5;
 strdef msg, len =
 \\hello world
@@ -58,6 +59,8 @@ fn test4(n) {
     x = 5;
     y = 0;
 
+	print(msg, len);
+
     while (i < n) {
         y = x * 2;
         i = i + 1;
@@ -69,15 +72,19 @@ fn test4(n) {
 asm(
 	\\.section .text
 	\\.global _start
+
 	\\_start:
-	\\	mov rax, 1
-	\\	mov rdi, 2
-	\\	lea rsi, [rip + D0]
-	\\	mov rdx, 11
-	\\	syscall
 	\\	mov rdi, 7
 	\\	call test4
 	\\	mov rdi, rax
 	\\	mov rax, 60
 	\\	syscall
+
+	\\print:
+	\\	mov rdx, rsi
+	\\	mov rsi, rdi
+	\\	mov rax, 1
+	\\	mov rdi, 2
+	\\	syscall
+	\\	ret
 );

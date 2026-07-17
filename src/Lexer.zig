@@ -46,6 +46,7 @@ pub const Token = struct {
         kw_export,
         kw_asm,
         kw_strdef,
+        kw_label,
 
         multi_line_str,
 
@@ -69,6 +70,7 @@ const keywords: std.static_string_map.StaticStringMap(Token.Kind) = .initComptim
     .{ "export", .kw_export },
     .{ "asm", .kw_asm },
     .{ "strdef", .kw_strdef },
+    .{ "label", .kw_label },
 });
 
 pub fn getTokens(alloc: std.mem.Allocator, src: []const u8) !TokenList {

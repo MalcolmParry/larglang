@@ -50,6 +50,8 @@ pub const Node = struct {
         /// string length in data.token_str.token
         /// string index in data.token_str.str
         strdef,
+        /// uses data.token, stores name
+        label_decl,
 
         /// uses data.token_node
         stat_assign,
@@ -62,11 +64,18 @@ pub const Node = struct {
         /// uses data.node_node
         /// stores condition, block
         stat_while,
+        /// uses data.node
+        /// stores expression to eval
+        stat_eval,
 
         /// uses data.none, name is stored in node.main_token_id
         expr_ident,
         /// uses data.int
         expr_lit_int,
+        /// uses data.extra_int
+        /// arg count in data.extra_int.int
+        /// stores the node indices of the function address and arguments
+        expr_call,
 
         // binary expressions, all use data.node_node
         expr_add,
@@ -90,6 +99,7 @@ pub const Node = struct {
         token_extra: TokenAndExtra,
         str: StrIndex,
         token_str: TokenAndStrIndex,
+        extra_int: ExtraAndInt,
 
         pub const NodeSlice = struct {
             first_node: Index,
@@ -119,6 +129,11 @@ pub const Node = struct {
         pub const TokenAndStrIndex = struct {
             token: TokenIndex,
             str: StrIndex,
+        };
+
+        pub const ExtraAndInt = struct {
+            extra: u32,
+            int: u32,
         };
     };
 
@@ -223,6 +238,19 @@ pub fn parse(alloc: std.mem.Allocator, src: []const u8, tokens: TokenList) !Ast 
                         .token = len_id,
                         .str = str_id,
                     } },
+                });
+            },
+            .kw_label => {
+                _ = try parser.popExpectToken(.kw_label);
+
+                const label_id = parser.head;
+                _ = try parser.popExpectToken(.ident);
+                _ = try parser.popExpectToken(.semicolon);
+
+                try tl_nodes.append(alloc, .{
+                    .kind = .label_decl,
+                    .main_token_id = label_id - 1,
+                    .data = .{ .token = label_id },
                 });
             },
             .eof => break,
@@ -398,7 +426,7 @@ pub const Parser = struct {
         const first_id = parser.head;
         const first = parser.popToken();
 
-        switch (first.kind) {
+        first_token_switch: switch (first.kind) {
             .kw_if => {
                 _ = try parser.popExpectToken(.lparen);
                 const cond = try parser.parseExpr(0);
@@ -442,6 +470,11 @@ pub const Parser = struct {
                 });
             },
             .ident => {
+                // very hacky way of making it so if there isnt an assignment here
+                // it gets processed as an expression evaluation
+                if (parser.peekToken(0).kind != .equal)
+                    continue :first_token_switch .int;
+
                 _ = try parser.popExpectToken(.equal);
                 const expr = try parser.parseExpr(0);
                 _ = try parser.popExpectToken(.semicolon);
@@ -465,7 +498,18 @@ pub const Parser = struct {
                     .data = .{ .node = expr },
                 });
             },
-            else => return error.ParserFailed,
+            else => {
+                parser.head -= 1;
+                const first_token = parser.head;
+                const expr = try parser.parseExpr(0);
+                _ = try parser.popExpectToken(.semicolon);
+
+                try statements.append(alloc, .{
+                    .kind = .stat_eval,
+                    .main_token_id = first_token,
+                    .data = .{ .node = expr },
+                });
+            },
         }
     }
 
@@ -544,8 +588,58 @@ pub const Parser = struct {
             else => return error.ParserFailed,
         };
 
-        const node_id = parser.nodes.len;
+        var node_id = parser.nodes.len;
         try parser.nodes.append(alloc, node);
+
+        while (true) {
+            switch (parser.peekToken(0).kind) {
+                .lparen => {
+                    parser.head += 1;
+
+                    var data: std.ArrayList(u32) = .empty;
+                    var arg_count: u32 = 0;
+                    defer data.deinit(alloc);
+                    try data.append(alloc, @intCast(node_id));
+
+                    while (true) {
+                        if (parser.peekToken(0).kind == .rparen) {
+                            parser.head += 1;
+                            break;
+                        }
+
+                        arg_count += 1;
+                        try data.append(alloc, try parser.parseExpr(0));
+
+                        switch (parser.peekToken(0).kind) {
+                            .comma => {
+                                parser.head += 1;
+                                continue;
+                            },
+                            .rparen => {
+                                parser.head += 1;
+                                break;
+                            },
+                            else => return error.ParserFailed,
+                        }
+                    }
+
+                    const extra_index = parser.extra.items.len;
+                    try parser.extra.appendSlice(alloc, data.items);
+
+                    node_id = parser.nodes.len;
+                    try parser.nodes.append(alloc, .{
+                        .kind = .expr_call,
+                        .main_token_id = first_id,
+                        .data = .{ .extra_int = .{
+                            .extra = @intCast(extra_index),
+                            .int = arg_count,
+                        } },
+                    });
+                },
+                else => break,
+            }
+        }
+
         return @intCast(node_id);
     }
 
@@ -701,6 +795,14 @@ pub fn print(ast: Ast, term: std.Io.Terminal) !void {
                 try writer.print("\n{s}\n", .{ast.strings[d.str]});
                 term.setColor(.reset) catch {};
             },
+            .label_decl => {
+                term.setColor(.yellow) catch {};
+                try writer.print("label decl ", .{});
+                term.setColor(.green) catch {};
+                try writer.print("{s}", .{ast.tokens.items(.loc)[node.data.token].get(ast.src)});
+                term.setColor(.reset) catch {};
+                try writer.print("\n", .{});
+            },
             else => unreachable,
         }
     }
@@ -770,6 +872,13 @@ fn printBlock(term: std.Io.Terminal, ast: Ast, block: Node, indent: usize) !void
                 try writer.print(":\n", .{});
                 try printBlock(term, ast, body, indent + 1);
             },
+            .stat_eval => {
+                term.setColor(.yellow) catch {};
+                try writer.print("eval ", .{});
+                term.setColor(.reset) catch {};
+                try printExpr(term, ast, ast.nodes.get(stat.data.node));
+                try writer.print("\n", .{});
+            },
             else => unreachable,
         }
     }
@@ -810,16 +919,35 @@ fn printExpr(term: std.Io.Terminal, ast: Ast, node: Node) !void {
             try printExpr(term, ast, ast.nodes.get(data.right));
             try writer.print(")", .{});
         },
+        .expr_call => {
+            const data = node.data.extra_int;
+            const extra_data = ast.extra_data[data.extra..][0 .. data.int + 1];
+
+            try writer.print("(", .{});
+            term.setColor(.yellow) catch {};
+            try writer.print("call", .{});
+            term.setColor(.reset) catch {};
+            try writer.print(" (", .{});
+            try printExpr(term, ast, ast.nodes.get(extra_data[0]));
+            try writer.print(")(", .{});
+
+            for (extra_data[1..], 0..) |arg_node_id, arg_id| {
+                if (arg_id != 0) try writer.print(", ", .{});
+                try printExpr(term, ast, ast.nodes.get(arg_node_id));
+            }
+
+            try writer.print("))", .{});
+        },
         else => unreachable,
     }
 }
 
 pub fn dump(ast: Ast, term: std.Io.Terminal) !void {
-    for (0..ast.nodes.len) |i| {
-        const node = ast.nodes.get(i);
+    for (0..ast.nodes.len) |node_id| {
+        const node = ast.nodes.get(node_id);
 
         term.setColor(.green) catch {};
-        try term.writer.print("#{} ", .{i});
+        try term.writer.print("#{} ", .{node_id});
         term.setColor(.yellow) catch {};
         try term.writer.print("{s} ", .{@tagName(node.kind)});
         term.setColor(.reset) catch {};
@@ -833,7 +961,7 @@ pub fn dump(ast: Ast, term: std.Io.Terminal) !void {
                 const data = node.data.token_node;
                 try term.writer.print("tokens[{}], node[{}]", .{ data.token, data.node });
             },
-            .stat_ret => {
+            .stat_ret, .stat_eval => {
                 try term.writer.print("nodes[{}]", .{node.data.node});
             },
             .expr_lit_int => {
@@ -877,6 +1005,16 @@ pub fn dump(ast: Ast, term: std.Io.Terminal) !void {
                 term.setColor(.red) catch {};
                 try term.writer.print("{s}", .{ast.strings[d.str]});
                 term.setColor(.reset) catch {};
+            },
+            .label_decl => {
+                try term.writer.print("tokens[{}]", .{node.data.token});
+            },
+            .expr_call => {
+                const d = node.data.extra_int;
+                for (0..d.int + 1) |i| {
+                    if (i != 0) try term.writer.print(", ", .{});
+                    try term.writer.print("nodes[{}]", .{ast.extra_data[d.extra + i]});
+                }
             },
         }
 

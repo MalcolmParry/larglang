@@ -32,6 +32,7 @@ pub fn foldConstants(alloc: std.mem.Allocator, ir: *Ir, block: *Block) !bool {
                 dirty = true;
                 inst.* = .noop;
                 remapValueRef(
+                    ir,
                     block,
                     .fromInst(@intCast(inst_id)),
                     try ir.appendImm(alloc, .{ .int = result }),
@@ -65,14 +66,13 @@ pub fn getImmediate(ir: *const Ir, ref: ValueRef) ?u64 {
 
             return switch (val) {
                 .int => |int| int,
-                .global_addr => null,
-                .data_addr => null,
+                else => null,
             };
         },
     };
 }
 
-pub fn killUnusedInsts(alloc: std.mem.Allocator, block: *Block) !bool {
+pub fn killUnusedInsts(alloc: std.mem.Allocator, ir: *Ir, block: *Block) !bool {
     var dirty: bool = false;
 
     var unused: std.DynamicBitSetUnmanaged = try .initFull(alloc, block.insts.items.len);
@@ -86,6 +86,11 @@ pub fn killUnusedInsts(alloc: std.mem.Allocator, block: *Block) !bool {
                 const bin = inst.data.bin;
                 markValueRefUsed(&unused, bin.left);
                 markValueRefUsed(&unused, bin.right);
+            },
+            .val_ref_list => {
+                const d = inst.data.val_ref_list;
+                const slice = ir.extra_val_refs.items[d.start..][0..d.len];
+                for (slice) |ref| markValueRefUsed(&unused, ref);
             },
         }
     }
@@ -192,7 +197,7 @@ pub fn mergeBlocks(alloc: std.mem.Allocator, ir: *Ir) !bool {
             try old_to_new_val.put(alloc, .fromArg(@intCast(arg_id)), val);
         }
 
-        try appendAndRemapInsts(alloc, other.insts.items, block, &old_to_new_val);
+        try appendAndRemapInsts(alloc, ir, other.insts.items, block, &old_to_new_val);
 
         block.terminator.deinit(alloc);
         block.terminator = other.terminator;
@@ -205,7 +210,8 @@ pub fn mergeBlocks(alloc: std.mem.Allocator, ir: *Ir) !bool {
     return dirty;
 }
 
-pub fn appendAndRemapInsts(alloc: std.mem.Allocator, src: []const Inst, dst: *Block, val_map: *std.hash_map.AutoHashMapUnmanaged(ValueRef, ValueRef)) !void {
+/// invalidates the old instructions
+pub fn appendAndRemapInsts(alloc: std.mem.Allocator, ir: *Ir, src: []const Inst, dst: *Block, val_map: *std.hash_map.AutoHashMapUnmanaged(ValueRef, ValueRef)) !void {
     try dst.insts.ensureUnusedCapacity(alloc, src.len);
 
     for (src, 0..) |inst, inst_id| {
@@ -223,6 +229,12 @@ pub fn appendAndRemapInsts(alloc: std.mem.Allocator, src: []const Inst, dst: *Bl
                 const new_left = getValRefFromMap(val_map, bin.left);
                 const new_right = getValRefFromMap(val_map, bin.right);
                 break :blk try dst.appendInst(alloc, .bin(inst.tag, new_left, new_right));
+            },
+            .val_ref_list => blk: {
+                const d = inst.data.val_ref_list;
+                const slice = ir.extra_val_refs.items[d.start..][0..d.len];
+                for (slice) |*ref| ref.* = getValRefFromMap(val_map, ref.*);
+                break :blk try dst.appendInst(alloc, inst);
             },
         };
 
@@ -250,7 +262,7 @@ fn getValRefFromMap(map: *const std.hash_map.AutoHashMapUnmanaged(ValueRef, Valu
     return map.get(ref) orelse unreachable;
 }
 
-pub fn remapValueRef(block: *Block, old: ValueRef, new: ValueRef) void {
+pub fn remapValueRef(ir: *Ir, block: *Block, old: ValueRef, new: ValueRef) void {
     std.debug.assert(old.tag != .imm);
 
     for (block.insts.items) |*inst| {
@@ -264,6 +276,13 @@ pub fn remapValueRef(block: *Block, old: ValueRef, new: ValueRef) void {
                 const bin = &inst.data.bin;
                 if (bin.left == old) bin.left = new;
                 if (bin.right == old) bin.right = new;
+            },
+            .val_ref_list => {
+                const d = inst.data.val_ref_list;
+                const slice = ir.extra_val_refs.items[d.start..][0..d.len];
+                for (slice) |*ref| {
+                    if (ref.* == old) ref.* = new;
+                }
             },
         }
     }
@@ -310,6 +329,11 @@ pub fn removeUnusedArgs(alloc: std.mem.Allocator, ir: *Ir, block_id: BlockId) !b
                 markArgRefUsed(&unused, bin.left);
                 markArgRefUsed(&unused, bin.right);
             },
+            .val_ref_list => {
+                const d = inst.data.val_ref_list;
+                const slice = ir.extra_val_refs.items[d.start..][0..d.len];
+                for (slice) |ref| markArgRefUsed(&unused, ref);
+            },
         }
     }
 
@@ -336,7 +360,7 @@ pub fn removeUnusedArgs(alloc: std.mem.Allocator, ir: *Ir, block_id: BlockId) !b
         if (arg_id != last) {
             unused.setValue(arg_id, unused.isSet(last));
             unused.unset(last);
-            remapValueRef(block, .fromArg(@intCast(last)), .fromArg(@intCast(arg_id)));
+            remapValueRef(ir, block, .fromArg(@intCast(last)), .fromArg(@intCast(arg_id)));
         }
 
         for (ir.blocks.items) |*other| {
@@ -435,6 +459,7 @@ pub fn forwardImmediates(alloc: std.mem.Allocator, ir: *Ir) !bool {
         for (block_imm_states, 0..) |imm_state, arg_id| {
             const imm_ref = if (imm_state == .imm) imm_state.imm else continue;
             remapValueRef(
+                ir,
                 block,
                 .fromArg(@intCast(arg_id)),
                 .{ .tag = .imm, .data = imm_ref },
@@ -506,7 +531,7 @@ pub fn optimize(alloc: std.mem.Allocator, ir: *Ir) !void {
 
             dirty = try removeUnusedArgs(alloc, ir, @intCast(block_id)) or dirty;
             dirty = try foldConstants(alloc, ir, block) or dirty;
-            dirty = try killUnusedInsts(alloc, block) or dirty;
+            dirty = try killUnusedInsts(alloc, ir, block) or dirty;
         }
 
         dirty = try forwardImmediates(alloc, ir) or dirty;
@@ -562,7 +587,7 @@ pub fn clean(alloc: std.mem.Allocator, ir: *Ir) !void {
             try old_to_new_refs.put(alloc, ref, ref);
         }
 
-        try appendAndRemapInsts(alloc, old_insts.items, block, &old_to_new_refs);
+        try appendAndRemapInsts(alloc, ir, old_insts.items, block, &old_to_new_refs);
         remapTerminatorValRefs(&block.terminator, &old_to_new_refs);
     }
 }
@@ -579,6 +604,11 @@ pub fn validate(ir: Ir) void {
                     const bin = inst.data.bin;
                     validateRef(ir, block, bin.left, @intCast(inst_id));
                     validateRef(ir, block, bin.right, @intCast(inst_id));
+                },
+                .call => {
+                    const d = inst.data.val_ref_list;
+                    const slice = ir.extra_val_refs.items[d.start..][0..d.len];
+                    for (slice) |ref| validateRef(ir, block, ref, @intCast(inst_id));
                 },
             }
         }

@@ -145,9 +145,11 @@ fn compile(info: CompInfo) !void {
     if (info.flags.dump_ast) {
         try printHeading(debug, "Raw AST");
         try ast.dump(debug);
+        try debug.writer.flush();
 
         try printHeading(debug, "AST");
         try ast.print(debug);
+        try debug.writer.flush();
     }
 
     var comp_unit = try ir_gen.compileAst(alloc, ast);
@@ -159,6 +161,7 @@ fn compile(info: CompInfo) !void {
         if (info.flags.dump_ir) {
             try printHeading(debug, "IR");
             try ir.print(debug);
+            try debug.writer.flush();
         }
 
         try ir_opt.optimize(alloc, ir);
@@ -170,52 +173,57 @@ fn compile(info: CompInfo) !void {
 
             try printHeading(debug, "Optimized IR");
             try ir.print(debug);
+            try debug.writer.flush();
         }
 
         ir_opt.validate(ir.*);
 
-        {
-            var mir = try mir_gen.gen(alloc, ir.*);
-            errdefer mir.deinit(alloc);
-
-            if (info.flags.dump_mir) {
-                try printHeading(debug, "Machine IR");
-                try mir.print(debug);
-            }
-
-            try mir_opt.optimize(alloc, &mir);
-            try mir_opt.clean(alloc, &mir);
-
-            if (info.flags.dump_mir) {
-                try printHeading(debug, "Optimized Machine IR");
-                try mir.print(debug);
-            }
-
-            func.mir = mir;
-        }
-
-        {
-            var ramir = try reg_alloc.emitRamir(alloc, func.mir.?);
-            errdefer ramir.deinit(alloc);
-
-            if (info.flags.dump_ramir) {
-                try printHeading(debug, "Register Allocated Machine IR");
-                try ramir.print(debug);
-            }
-
-            try ramir_merge.merge(alloc, &ramir);
-
-            if (info.flags.dump_ramir) {
-                try printHeading(debug, "Merged Register Allocated Machine IR");
-                try ramir.print(debug);
-            }
-
-            func.ramir = ramir;
-        }
+        // {
+        //     var mir = try mir_gen.gen(alloc, ir.*);
+        //     errdefer mir.deinit(alloc);
+        //
+        //     if (info.flags.dump_mir) {
+        //         try printHeading(debug, "Machine IR");
+        //         try mir.print(debug);
+        //         try debug.writer.flush();
+        //     }
+        //
+        //     try mir_opt.optimize(alloc, &mir);
+        //     try mir_opt.clean(alloc, &mir);
+        //
+        //     if (info.flags.dump_mir) {
+        //         try printHeading(debug, "Optimized Machine IR");
+        //         try mir.print(debug);
+        //         try debug.writer.flush();
+        //     }
+        //
+        //     func.mir = mir;
+        // }
+        //
+        // {
+        //     var ramir = try reg_alloc.emitRamir(alloc, func.mir.?);
+        //     errdefer ramir.deinit(alloc);
+        //
+        //     if (info.flags.dump_ramir) {
+        //         try printHeading(debug, "Register Allocated Machine IR");
+        //         try ramir.print(debug);
+        //         try debug.writer.flush();
+        //     }
+        //
+        //     try ramir_merge.merge(alloc, &ramir);
+        //
+        //     if (info.flags.dump_ramir) {
+        //         try printHeading(debug, "Merged Register Allocated Machine IR");
+        //         try ramir.print(debug);
+        //         try debug.writer.flush();
+        //     }
+        //
+        //     func.ramir = ramir;
+        // }
     }
 
-    if (!info.flags.no_emit)
-        try emit_asm.emit(info.output, comp_unit);
+    // if (!info.flags.no_emit)
+    //     try emit_asm.emit(info.output, comp_unit);
 }
 
 fn printHeading(term: std.Io.Terminal, text: []const u8) !void {

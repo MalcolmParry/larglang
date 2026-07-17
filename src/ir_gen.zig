@@ -16,6 +16,7 @@ pub fn compileAst(alloc: std.mem.Allocator, ast: Ast) !CompUnit {
         .global_asm = .empty,
         .data = .empty,
         .global_constants = .empty,
+        .extern_labels = .empty,
     };
     errdefer comp_unit.deinit(alloc);
 
@@ -24,13 +25,11 @@ pub fn compileAst(alloc: std.mem.Allocator, ast: Ast) !CompUnit {
     const tl_end = tl_slice.first_node + tl_slice.len;
 
     var tl_i: usize = tl_slice.first_node;
-    while (tl_i < tl_end) {
+    while (tl_i < tl_end) : (tl_i += 1) {
         const node = ast.nodes.get(tl_i);
 
         switch (node.kind) {
             .func => {
-                tl_i += 1;
-
                 const fn_data = node.data.token_extra;
                 const ast_func: *Ast.Node.Func = @ptrCast(ast.extra_data.ptr + fn_data.extra);
 
@@ -52,6 +51,7 @@ pub fn compileAst(alloc: std.mem.Allocator, ast: Ast) !CompUnit {
                     .link_sym = ast.tokens.get(fn_data.token).loc.get(ast.src),
                     .blocks = .empty,
                     .imms = .empty,
+                    .extra_val_refs = .empty,
                 };
                 errdefer ir.deinit(alloc);
 
@@ -86,8 +86,6 @@ pub fn compileAst(alloc: std.mem.Allocator, ast: Ast) !CompUnit {
                 });
             },
             .global_var => {
-                tl_i += 1;
-
                 const d = node.data.token_node;
                 const name = ast.tokens.get(d.token).loc.get(ast.src);
                 const expr = ast.nodes.get(d.node);
@@ -96,14 +94,10 @@ pub fn compileAst(alloc: std.mem.Allocator, ast: Ast) !CompUnit {
                 try comp_unit.globals.put(alloc, name, .{ .initial_value = expr.data.int });
             },
             .global_asm => {
-                tl_i += 1;
-
                 const str = ast.strings[node.data.str];
                 try comp_unit.global_asm.append(alloc, str);
             },
             .strdef => {
-                tl_i += 1;
-
                 const d = node.data.token_str;
                 const str = ast.strings[d.str];
                 const addr_name = ast.tokens.items(.loc)[node.main_token_id].get(ast.src);
@@ -112,6 +106,9 @@ pub fn compileAst(alloc: std.mem.Allocator, ast: Ast) !CompUnit {
                 try comp_unit.global_constants.put(alloc, addr_name, .{ .data_addr = @intCast(comp_unit.data.items.len) });
                 try comp_unit.global_constants.put(alloc, len_name, .{ .int = str.len });
                 try comp_unit.data.append(alloc, str);
+            },
+            .label_decl => {
+                try comp_unit.extern_labels.put(alloc, ast.tokens.items(.loc)[node.data.token].get(ast.src), {});
             },
             else => unreachable,
         }
@@ -183,6 +180,17 @@ fn compileCodeBlock(
 
                 ir.blocks.items[block_id].terminator = .{ .ret = ref };
                 return .returned;
+            },
+            .stat_eval => {
+                _ = try compileExpr(
+                    alloc,
+                    ast,
+                    comp_unit,
+                    ir,
+                    &ir.blocks.items[block_id],
+                    &new_ident_map,
+                    node.data.node,
+                );
             },
             .stat_if => {
                 node_i += 1;
@@ -348,6 +356,14 @@ pub fn compileExpr(alloc: std.mem.Allocator, ast: Ast, comp_unit: CompUnit, ir: 
         .expr_ident => {
             const name = ast.tokens.items(.loc)[node.main_token_id].get(ast.src);
 
+            if (comp_unit.funcs.getIndex(name)) |x| {
+                return try ir.appendImm(alloc, .{ .func_addr = @intCast(x) });
+            }
+
+            if (comp_unit.extern_labels.getIndex(name)) |x| {
+                return try ir.appendImm(alloc, .{ .label_addr = @intCast(x) });
+            }
+
             if (comp_unit.globals.getIndex(name)) |global_ref| {
                 return try block.appendInst(alloc, .unary(.load, try ir.appendImm(alloc, .{ .global_addr = @intCast(global_ref) })));
             }
@@ -385,6 +401,25 @@ pub fn compileExpr(alloc: std.mem.Allocator, ast: Ast, comp_unit: CompUnit, ir: 
             };
 
             return block.appendInst(alloc, .bin(tag, left, right));
+        },
+        .expr_call => {
+            const d = node.data.extra_int;
+            const slice = ast.extra_data[d.extra..][0 .. d.int + 1];
+
+            const list_start = ir.extra_val_refs.items.len;
+            try ir.extra_val_refs.ensureUnusedCapacity(alloc, slice.len);
+            for (slice) |i| {
+                const ref = try compileExpr(alloc, ast, comp_unit, ir, block, ident_map, i);
+                ir.extra_val_refs.appendAssumeCapacity(ref);
+            }
+
+            return block.appendInst(alloc, .{
+                .tag = .call,
+                .data = .{ .val_ref_list = .{
+                    .start = @intCast(list_start),
+                    .len = @intCast(slice.len),
+                } },
+            });
         },
         else => unreachable,
     }
