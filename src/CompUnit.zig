@@ -50,7 +50,7 @@ pub const Immediate = union(enum) {
             .int => .blue,
             .global_addr => .white,
             .data_addr => .yellow,
-            .func_addr, .label_addr => .green,
+            .func_addr, .label_addr => .red,
         }) catch {};
 
         switch (imm) {

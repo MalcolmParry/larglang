@@ -2,14 +2,19 @@ const std = @import("std");
 const CompUnit = @import("../../CompUnit.zig");
 const Mir = @This();
 
+pub const gen = @import("mir_gen.zig");
+pub const opt = @import("mir_opt.zig");
+
 link_sym: []const u8,
 blocks: std.ArrayList(Block),
 imms: std.ArrayList(CompUnit.Immediate),
+extra_val_refs: std.ArrayList(ValueRef),
 
 pub fn deinit(mir: *Mir, alloc: std.mem.Allocator) void {
     for (mir.blocks.items) |*b| b.deinit(alloc);
     mir.blocks.deinit(alloc);
     mir.imms.deinit(alloc);
+    mir.extra_val_refs.deinit(alloc);
 }
 
 pub const ImmId = u26;
@@ -46,9 +51,11 @@ pub const Inst = struct {
         load,
         store,
 
+        call,
+
         pub fn hasSideEffects(tag: Tag) bool {
             return switch (tag) {
-                .store => true,
+                .store, .call => true,
                 else => false,
             };
         }
@@ -58,6 +65,7 @@ pub const Inst = struct {
                 .no_op => .none,
                 .load => .unary,
                 .add, .sub, .mul, .udiv, .cmp_eq, .cmp_ult, .cmp_ugt, .store => .bin,
+                .call => .val_ref_list,
             };
         }
     };
@@ -66,16 +74,24 @@ pub const Inst = struct {
         none: void,
         unary: ValueRef,
         bin: Bin,
+        val_ref_list: ValRefList,
 
         pub const Bin = struct {
             left: ValueRef,
             right: ValueRef,
         };
 
+        pub const ValRefList = struct {
+            /// in extra array
+            start: u16,
+            len: u16,
+        };
+
         pub const Kind = enum {
             none,
             unary,
             bin,
+            val_ref_list,
         };
     };
 };
@@ -186,6 +202,15 @@ pub fn print(mir: Mir, term: std.Io.Terminal) !void {
                     try printValRef(term, mir, data.left);
                     try writer.print(", ", .{});
                     try printValRef(term, mir, data.right);
+                },
+                .call => {
+                    const data = inst.data.val_ref_list;
+                    const slice = mir.extra_val_refs.items[data.start..][0..data.len];
+
+                    for (slice, 0..) |ref, i| {
+                        if (i != 0) try writer.print(", ", .{});
+                        try printValRef(term, mir, ref);
+                    }
                 },
             }
 

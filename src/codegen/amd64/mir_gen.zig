@@ -9,6 +9,7 @@ pub fn gen(alloc: std.mem.Allocator, ir: Ir) !Mir {
         .link_sym = ir.link_sym,
         .blocks = try .initCapacity(alloc, ir.blocks.items.len),
         .imms = try ir.imms.clone(alloc),
+        .extra_val_refs = .empty,
     };
     errdefer mir.deinit(alloc);
 
@@ -77,6 +78,25 @@ pub fn gen(alloc: std.mem.Allocator, ir: Ir) !Mir {
                         .tag = .inst,
                         .class = .gp,
                         .id = @intCast(mir_inst_id),
+                    });
+                },
+                .call => {
+                    const ir_data = ir_inst.data.val_ref_list;
+                    const ir_slice = ir.extra_val_refs.items[ir_data.start..][0..ir_data.len];
+
+                    try mir.extra_val_refs.ensureUnusedCapacity(alloc, ir_slice.len);
+                    const mir_extra_start = mir.extra_val_refs.items.len;
+                    for (ir_slice) |ir_ref| {
+                        const mir_ref = translateValRef(val_map, ir_ref);
+                        mir.extra_val_refs.appendAssumeCapacity(mir_ref);
+                    }
+
+                    mir_block.insts.appendAssumeCapacity(.{
+                        .tag = .call,
+                        .data = .{ .val_ref_list = .{
+                            .start = @intCast(mir_extra_start),
+                            .len = ir_data.len,
+                        } },
                     });
                 },
             }

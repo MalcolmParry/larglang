@@ -47,6 +47,7 @@ pub const Inst = struct {
         ret,
         jmp,
         jcc,
+        call,
     };
 
     pub const Data = union {

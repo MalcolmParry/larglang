@@ -2,6 +2,9 @@ const std = @import("std");
 const CompUnit = @import("CompUnit.zig");
 const Ir = @This();
 
+pub const gen = @import("ir_gen.zig");
+pub const opt = @import("ir_opt.zig");
+
 link_sym: []const u8,
 blocks: std.ArrayList(Block),
 imms: std.ArrayList(CompUnit.Immediate),

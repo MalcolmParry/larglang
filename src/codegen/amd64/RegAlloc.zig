@@ -2,6 +2,7 @@ const std = @import("std");
 const Mir = @import("Mir.zig");
 const Ramir = @import("Ramir.zig");
 
+const sysv_arg_order = [_]Ramir.Reg{ .rdi, .rsi, .rdx, .rcx, .r8, .r9 };
 const GlobalValRef = union(enum) {
     imm: Mir.ImmId,
     inst: Local,
@@ -59,11 +60,10 @@ pub fn emitRamir(alloc: std.mem.Allocator, mir: Mir) !Ramir {
                 .data = .{ .ri = .{ .r = .rsp, .i = @intCast(ramir.imms.items.len - 1) } },
             });
 
-            const reg_order = [_]Ramir.Reg{ .rdi, .rsi, .rdx, .rcx, .r8, .r9 };
-            if (block.arg_count > reg_order.len) return error.TooManyParameters;
+            if (block.arg_count > sysv_arg_order.len) return error.TooManyParameters;
 
             for (0..block.arg_count) |arg_id| {
-                try storeRegInAlloc(alloc, &ra_block, reg_order[arg_id], map.get(.{
+                try storeRegInAlloc(alloc, &ra_block, sysv_arg_order[arg_id], map.get(.{
                     .arg = .{
                         .block = @intCast(block_id),
                         .id = @intCast(arg_id),
@@ -171,6 +171,32 @@ pub fn emitRamir(alloc: std.mem.Allocator, mir: Mir) !Ramir {
                         },
                         else => unreachable,
                     }
+                },
+                .call => {
+                    const data = inst.data.val_ref_list;
+                    const ref_slice = mir.extra_val_refs.items[data.start..][0..data.len];
+
+                    try putGlobalRefInReg(alloc, map.*, &ra_block, .rax, globalRefFromLocal(@intCast(block_id), ref_slice[0]));
+
+                    const args = ref_slice[1..];
+                    if (args.len > sysv_arg_order.len) return error.TooManyArgs;
+
+                    for (args, 0..) |ref, arg_id| {
+                        try putGlobalRefInReg(alloc, map.*, &ra_block, sysv_arg_order[arg_id], globalRefFromLocal(@intCast(block_id), ref));
+                    }
+
+                    try ra_block.insts.append(alloc, .{
+                        .tag = .call,
+                        .data_kind = .r,
+                        .data = .{ .r = .rax },
+                    });
+
+                    try storeRegInAlloc(alloc, &ra_block, .rax, map.get(.{
+                        .inst = .{
+                            .block = @intCast(block_id),
+                            .id = @intCast(inst_id),
+                        },
+                    }) orelse unreachable);
                 },
             }
         }

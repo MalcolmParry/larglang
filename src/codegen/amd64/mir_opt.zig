@@ -53,6 +53,12 @@ pub fn killUnusedInsts(alloc: std.mem.Allocator, mir: *Mir) !bool {
                     markValRefUsed(&unused_set, bin.left);
                     markValRefUsed(&unused_set, bin.right);
                 },
+                .val_ref_list => {
+                    const data = inst.data.val_ref_list;
+                    const slice = mir.extra_val_refs.items[data.start..][0..data.len];
+
+                    for (slice) |ref| markValRefUsed(&unused_set, ref);
+                },
             }
         }
 
@@ -140,6 +146,14 @@ pub fn clean(alloc: std.mem.Allocator, mir: *Mir) !void {
                             .tag = inst.tag,
                             .data = .{ .bin = bin },
                         });
+                    },
+                    .val_ref_list => {
+                        const data = inst.data.val_ref_list;
+                        const slice = mir.extra_val_refs.items[data.start..][0..data.len];
+
+                        for (slice) |*ref| {
+                            if (ref.tag == .inst and ref.id >= inst_id) ref.id -= 1;
+                        }
                     },
                 }
             }
