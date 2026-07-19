@@ -343,9 +343,9 @@ fn putAllocInReg(alloc: std.mem.Allocator, block: *Ramir.Block, reg: Ramir.Reg, 
                 .data = .{ .rm = .{
                     .r = reg,
                     .m = .{
-                        .base = .none,
+                        .base = .{ .reg = .rbp },
                         .mod = .{ .rm = .{
-                            .index = .rbp,
+                            .index = .none,
                             .scale = .@"1",
                             .disp = -@as(i32, @intCast(stack)) - 8,
                         } },
@@ -376,9 +376,9 @@ fn storeRegInAlloc(alloc: std.mem.Allocator, block: *Ramir.Block, reg: Ramir.Reg
                 .data_kind = .mr,
                 .data = .{ .rm = .{
                     .m = .{
-                        .base = .none,
+                        .base = .{ .reg = .rbp },
                         .mod = .{ .rm = .{
-                            .index = .rbp,
+                            .index = .none,
                             .scale = .@"1",
                             .disp = -@as(i32, @intCast(stack)) - 8,
                         } },

@@ -52,6 +52,7 @@ pub fn compileAst(alloc: std.mem.Allocator, ast: Ast) !CompUnit {
                     .blocks = .empty,
                     .imms = .empty,
                     .extra_val_refs = .empty,
+                    .stack_slots = .empty,
                 };
                 errdefer ir.deinit(alloc);
 
@@ -420,6 +421,21 @@ pub fn compileExpr(alloc: std.mem.Allocator, ast: Ast, comp_unit: CompUnit, ir: 
                     .len = @intCast(slice.len),
                 } },
             });
+        },
+        .expr_stack_alloc => {
+            const d = node.data.node;
+            const size_node = ast.nodes.get(d);
+            if (size_node.kind != .expr_lit_int) return error.CompileFailed;
+            if (size_node.data.int > std.math.maxInt(u32)) return error.CompileFailed;
+            const size: u32 = @intCast(size_node.data.int);
+
+            const stack_slot_id = ir.stack_slots.items.len;
+            try ir.stack_slots.append(alloc, .{ .size = size });
+
+            return .{
+                .tag = .stack_addr,
+                .data = @intCast(stack_slot_id),
+            };
         },
         else => unreachable,
     }

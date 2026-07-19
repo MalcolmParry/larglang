@@ -85,6 +85,9 @@ pub const Node = struct {
         expr_equal,
         expr_less,
         expr_more,
+
+        // unary expressions, all use data.node
+        expr_stack_alloc,
     };
 
     pub const Data = union {
@@ -585,6 +588,17 @@ pub const Parser = struct {
                 _ = try parser.popExpectToken(.rparen);
                 return expr;
             },
+            .kw_stack_alloc => {
+                const term = try parser.parseTerm();
+                const node_id = parser.nodes.len;
+                try parser.nodes.append(alloc, .{
+                    .kind = .expr_stack_alloc,
+                    .main_token_id = first_id,
+                    .data = .{ .node = term },
+                });
+
+                return @intCast(node_id);
+            },
             else => return error.ParserFailed,
         };
 
@@ -938,6 +952,16 @@ fn printExpr(term: std.Io.Terminal, ast: Ast, node: Node) !void {
 
             try writer.print("))", .{});
         },
+        .expr_stack_alloc => {
+            const data = node.data.node;
+
+            try writer.print("(", .{});
+            term.setColor(.yellow) catch {};
+            try writer.print("stack_alloc ", .{});
+            term.setColor(.reset) catch {};
+            try printExpr(term, ast, ast.nodes.get(data));
+            try writer.print(")", .{});
+        },
         else => unreachable,
     }
 }
@@ -961,7 +985,7 @@ pub fn dump(ast: Ast, term: std.Io.Terminal) !void {
                 const data = node.data.token_node;
                 try term.writer.print("tokens[{}], node[{}]", .{ data.token, data.node });
             },
-            .stat_ret, .stat_eval => {
+            .stat_ret, .stat_eval, .expr_stack_alloc => {
                 try term.writer.print("nodes[{}]", .{node.data.node});
             },
             .expr_lit_int => {

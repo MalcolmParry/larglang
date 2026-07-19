@@ -99,6 +99,7 @@ pub fn gen(alloc: std.mem.Allocator, ir: Ir) !Mir {
                         } },
                     });
                 },
+                .stack_alloc => {},
             }
         }
 

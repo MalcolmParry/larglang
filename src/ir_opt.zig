@@ -60,7 +60,7 @@ pub fn foldConstants(alloc: std.mem.Allocator, ir: *Ir, block: *Block) !bool {
 
 pub fn getImmediate(ir: *const Ir, ref: ValueRef) ?u64 {
     return switch (ref.tag) {
-        .inst, .arg => null,
+        .inst, .arg, .stack_addr => null,
         .imm => {
             const val = ir.imms.items[ref.data];
 
@@ -258,8 +258,10 @@ pub fn remapTerminatorValRefs(term: *Terminator, val_map: *const std.hash_map.Au
 }
 
 fn getValRefFromMap(map: *const std.hash_map.AutoHashMapUnmanaged(ValueRef, ValueRef), ref: ValueRef) ValueRef {
-    if (ref.tag == .imm) return ref;
-    return map.get(ref) orelse unreachable;
+    return switch (ref.tag) {
+        .arg, .inst => map.get(ref) orelse unreachable,
+        .imm, .stack_addr => ref,
+    };
 }
 
 pub fn remapValueRef(ir: *Ir, block: *Block, old: ValueRef, new: ValueRef) void {
@@ -388,7 +390,7 @@ pub fn removeUnusedArgs(alloc: std.mem.Allocator, ir: *Ir, block_id: BlockId) !b
 const ArgImmState = union(enum) {
     unknown,
     overdefined,
-    imm: ImmRef,
+    imm: ValueRef,
 
     fn merge(a: ArgImmState, b: ArgImmState, ir: *const Ir) ArgImmState {
         return switch (a) {
@@ -397,7 +399,15 @@ const ArgImmState = union(enum) {
             .imm => |x| switch (b) {
                 .unknown => a,
                 .overdefined => .overdefined,
-                .imm => |y| if (ir.imms.items[x].equal(ir.imms.items[y])) a else .overdefined,
+                .imm => |y| {
+                    if (x.tag != y.tag) return .overdefined;
+
+                    return switch (x.tag) {
+                        .imm => if (ir.imms.items[x.data].equal(ir.imms.items[y.data])) a else .overdefined,
+                        .stack_addr => if (x == y) a else .overdefined,
+                        .inst, .arg => unreachable,
+                    };
+                },
             },
         };
     }
@@ -411,7 +421,7 @@ fn setArgImmStateFromJmp(ir: *const Ir, jmp: Terminator.Jmp, pred_block_id: usiz
         const local_state: ArgImmState = switch (ref.tag) {
             .arg => arg_imm_states[pred_block_id][ref.data],
             .inst => .overdefined,
-            .imm => .{ .imm = ref.data },
+            .imm, .stack_addr => .{ .imm = ref },
         };
 
         const state = &block_arg_imm_states[arg_id];
@@ -462,7 +472,7 @@ pub fn forwardImmediates(alloc: std.mem.Allocator, ir: *Ir) !bool {
                 ir,
                 block,
                 .fromArg(@intCast(arg_id)),
-                .{ .tag = .imm, .data = imm_ref },
+                imm_ref,
             );
         }
     }
@@ -507,7 +517,7 @@ fn remapJmpToEmptyBlock(alloc: std.mem.Allocator, pred_jmp: *Terminator.Jmp, suc
     for (new_args, succ_jmp.args.items) |*new, succ_arg| {
         new.* = switch (succ_arg.tag) {
             .inst => unreachable,
-            .imm => succ_arg,
+            .imm, .stack_addr => succ_arg,
             .arg => pred_jmp.args.items[succ_arg.data],
         };
     }
@@ -633,6 +643,7 @@ fn validateRef(ir: Ir, block: Block, ref: ValueRef, maybe_current_inst_ref: ?Ins
         .inst => std.debug.assert(ref.data < inst_ref),
         .arg => std.debug.assert(ref.data < block.arg_count),
         .imm => std.debug.assert(ref.data < ir.imms.items.len),
+        .stack_addr => std.debug.assert(ref.data < ir.stack_slots.items.len),
     }
 }
 

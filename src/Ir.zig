@@ -9,12 +9,14 @@ link_sym: []const u8,
 blocks: std.ArrayList(Block),
 imms: std.ArrayList(CompUnit.Immediate),
 extra_val_refs: std.ArrayList(ValueRef),
+stack_slots: std.ArrayList(StackSlot),
 
 pub fn deinit(func: *Ir, alloc: std.mem.Allocator) void {
     for (func.blocks.items) |*block| block.deinit(alloc);
     func.blocks.deinit(alloc);
     func.imms.deinit(alloc);
     func.extra_val_refs.deinit(alloc);
+    func.stack_slots.deinit(alloc);
 }
 
 pub fn appendImm(func: *Ir, alloc: std.mem.Allocator, val: CompUnit.Immediate) !ValueRef {
@@ -24,6 +26,10 @@ pub fn appendImm(func: *Ir, alloc: std.mem.Allocator, val: CompUnit.Immediate) !
         .data = @intCast(func.imms.items.len - 1),
     };
 }
+
+pub const StackSlot = struct {
+    size: u32,
+};
 
 pub const BlockId = u32;
 pub const Block = struct {
@@ -104,6 +110,7 @@ pub const Terminator = union(enum) {
 
 pub const ImmRef = u14;
 pub const InstRef = u14;
+pub const StackSlotRef = u14;
 pub const ValueRef = packed struct(u16) {
     /// instruction index when tag = .inst
     /// arg index when tag = .arg
@@ -114,6 +121,7 @@ pub const ValueRef = packed struct(u16) {
         inst,
         arg,
         imm,
+        stack_addr,
     };
 
     pub fn fromInst(inst_id: u14) ValueRef {
@@ -311,12 +319,14 @@ fn printValRef(term: std.Io.Terminal, ir: Ir, ref: ValueRef) !void {
         .inst => .green,
         .arg => .magenta,
         .imm => .blue,
+        .stack_addr => .yellow,
     }) catch {};
 
     switch (ref.tag) {
         .inst => try writer.print("${}", .{ref.data}),
         .arg => try writer.print("%{}", .{ref.data}),
         .imm => try ir.imms.items[ref.data].print(term),
+        .stack_addr => try writer.print("^{}", .{ref.data}),
     }
 
     term.setColor(.reset) catch {};

@@ -69,6 +69,11 @@ fn test4(n) {
     return y;
 }
 
+fn printNum(n) {
+	buffer = stack_alloc 20;
+	return buffer;
+}
+
 asm(
 	\\.section .text
 	\\.global _start

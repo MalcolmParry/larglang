@@ -176,48 +176,48 @@ fn compile(info: CompInfo) !void {
 
         Ir.opt.validate(ir.*);
 
-        {
-            var mir = try Mir.gen.gen(alloc, ir.*);
-            errdefer mir.deinit(alloc);
-
-            if (info.flags.dump_mir) {
-                try printHeading(debug, "Machine IR");
-                try mir.print(debug);
-                try debug.writer.flush();
-            }
-
-            try Mir.opt.optimize(alloc, &mir);
-            try Mir.opt.clean(alloc, &mir);
-
-            if (info.flags.dump_mir) {
-                try printHeading(debug, "Optimized Machine IR");
-                try mir.print(debug);
-                try debug.writer.flush();
-            }
-
-            func.mir = mir;
-        }
-
-        {
-            var ramir = try reg_alloc.emitRamir(alloc, func.mir.?);
-            errdefer ramir.deinit(alloc);
-
-            if (info.flags.dump_ramir) {
-                try printHeading(debug, "Register Allocated Machine IR");
-                try ramir.print(debug);
-                try debug.writer.flush();
-            }
-
-            try ramir_merge.merge(alloc, &ramir);
-
-            if (info.flags.dump_ramir) {
-                try printHeading(debug, "Merged Register Allocated Machine IR");
-                try ramir.print(debug);
-                try debug.writer.flush();
-            }
-
-            func.ramir = ramir;
-        }
+        // {
+        //     var mir = try Mir.gen.gen(alloc, ir.*);
+        //     errdefer mir.deinit(alloc);
+        //
+        //     if (info.flags.dump_mir) {
+        //         try printHeading(debug, "Machine IR");
+        //         try mir.print(debug);
+        //         try debug.writer.flush();
+        //     }
+        //
+        //     try Mir.opt.optimize(alloc, &mir);
+        //     try Mir.opt.clean(alloc, &mir);
+        //
+        //     if (info.flags.dump_mir) {
+        //         try printHeading(debug, "Optimized Machine IR");
+        //         try mir.print(debug);
+        //         try debug.writer.flush();
+        //     }
+        //
+        //     func.mir = mir;
+        // }
+        //
+        // {
+        //     var ramir = try reg_alloc.emitRamir(alloc, func.mir.?);
+        //     errdefer ramir.deinit(alloc);
+        //
+        //     if (info.flags.dump_ramir) {
+        //         try printHeading(debug, "Register Allocated Machine IR");
+        //         try ramir.print(debug);
+        //         try debug.writer.flush();
+        //     }
+        //
+        //     try ramir_merge.merge(alloc, &ramir);
+        //
+        //     if (info.flags.dump_ramir) {
+        //         try printHeading(debug, "Merged Register Allocated Machine IR");
+        //         try ramir.print(debug);
+        //         try debug.writer.flush();
+        //     }
+        //
+        //     func.ramir = ramir;
+        // }
     }
 
     if (!info.flags.no_emit)

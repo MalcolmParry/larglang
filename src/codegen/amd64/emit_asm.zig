@@ -22,8 +22,8 @@ pub fn emit(writer: *std.Io.Writer, comp_unit: CompUnit) !void {
         \\
     , .{});
 
-    for (comp_unit.funcs.values()) |func| {
-        try emitFunc(writer, comp_unit, func.ramir.?);
+    for (comp_unit.funcs.values(), 0..) |func, func_id| {
+        try emitFunc(writer, comp_unit, @intCast(func_id), func.ramir.?);
 
         try writer.print("\n", .{});
     }
@@ -55,7 +55,7 @@ pub fn emit(writer: *std.Io.Writer, comp_unit: CompUnit) !void {
     }
 }
 
-pub fn emitFunc(writer: *std.Io.Writer, comp_unit: CompUnit, ramir: Ramir) !void {
+pub fn emitFunc(writer: *std.Io.Writer, comp_unit: CompUnit, func_id: u32, ramir: Ramir) !void {
     std.debug.assert(ramir.blocks.items.len == 1);
 
     const block = ramir.blocks.items[0];
@@ -68,11 +68,11 @@ pub fn emitFunc(writer: *std.Io.Writer, comp_unit: CompUnit, ramir: Ramir) !void
         const tab = "    ";
         switch (inst.tag) {
             .label => {
-                try writer.print(".L{}:\n", .{inst.data.u16});
+                try writer.print(".L{}_{}:\n", .{ func_id, inst.data.u16 });
                 continue;
             },
             .jmp => {
-                try writer.print(tab ++ "jmp .L{}\n", .{inst.data.u16});
+                try writer.print(tab ++ "jmp .L{}_{}\n", .{ func_id, inst.data.u16 });
                 continue;
             },
             .jcc => {
@@ -86,7 +86,7 @@ pub fn emitFunc(writer: *std.Io.Writer, comp_unit: CompUnit, ramir: Ramir) !void
                     .uge => "ge",
                 };
 
-                try writer.print(tab ++ "j{s} .L{}\n", .{ cond_ext, d.int });
+                try writer.print(tab ++ "j{s} .L{}_{}\n", .{ cond_ext, func_id, d.int });
                 continue;
             },
             else => {},
@@ -136,23 +136,43 @@ fn printImm(writer: *std.Io.Writer, comp_unit: CompUnit, ramir: Ramir, imm: Rami
 fn printMem(writer: *std.Io.Writer, comp_unit: CompUnit, mem: Ramir.Mem) !void {
     try writer.print("[", .{});
 
+    var first_term: bool = true;
     switch (mem.base) {
         .none => {},
-        .reg => |reg| try writer.print("{s} + ", .{@tagName(reg)}),
-        .global => |global_ref| try writer.print("{s} + ", .{comp_unit.globals.keys()[global_ref]}),
+        .reg => |reg| {
+            try writer.print("{s}", .{@tagName(reg)});
+            first_term = false;
+        },
+        .global => |global_ref| {
+            try writer.print("{s}", .{comp_unit.globals.keys()[global_ref]});
+            first_term = false;
+        },
     }
 
-    switch (mem.mod) {
-        .off => |off| try writer.print("{}", .{off}),
+    mod_switch: switch (mem.mod) {
+        .off => |off| {
+            if (off == 0) break :mod_switch;
+            if (!first_term) try writer.print(" + ", .{});
+            try writer.print("{}", .{off});
+        },
         .rm => |rm| {
-            try writer.print("{s}", .{@tagName(rm.index)});
+            if (rm.index != .none) {
+                try writer.print("{s}", .{@tagName(rm.index.toReg())});
 
-            if (rm.scale != .@"1") try writer.print(" * {}", .{rm.scale.toFactor()});
+                if (rm.scale != .@"1")
+                    try writer.print(" * {}", .{rm.scale.toFactor()});
 
-            if (rm.disp > 0) {
-                try writer.print(" + {}", .{rm.disp});
-            } else if (rm.disp < 0) {
-                try writer.print(" - {}", .{-rm.disp});
+                first_term = false;
+            }
+
+            if (first_term) {
+                try writer.print("{}", .{rm.disp});
+            } else {
+                if (rm.disp > 0) {
+                    try writer.print(" + {}", .{rm.disp});
+                } else if (rm.disp < 0) {
+                    try writer.print(" - {}", .{-rm.disp});
+                }
             }
         },
     }

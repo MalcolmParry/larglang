@@ -141,7 +141,7 @@ pub const Cond = enum {
     }
 };
 
-pub const Reg = enum {
+pub const Reg = enum(u8) {
     // zig fmt: off
     rax, rbx, rcx, rdx, rdi, rsi, rsp, rbp,
     r8, r9, r10, r11, r12, r13, r14, r15,
@@ -156,9 +156,41 @@ pub const Reg = enum {
     r8b, r9b, r10b, r11b, r12b, r13b, r14b, r15b,
     // zig fmt: on
 
+    pub const TagInt = @typeInfo(Reg).@"enum".tag_type;
     pub const Class = enum(u4) {
         gp,
     };
+};
+
+pub const OptReg = enum(Reg.TagInt) {
+    none = std.math.maxInt(Reg.TagInt),
+    _,
+
+    pub fn unwrap(opt_reg: OptReg) ?Reg {
+        if (opt_reg == .none) return null;
+        return @enumFromInt(@intFromEnum(opt_reg));
+    }
+
+    pub fn wrap(maybe_reg: ?Reg) OptReg {
+        if (maybe_reg) |reg| {
+            return @enumFromInt(@intFromEnum(reg));
+        } else {
+            return .none;
+        }
+    }
+
+    pub fn fromReg(reg: Reg) OptReg {
+        return @enumFromInt(@intFromEnum(reg));
+    }
+
+    pub fn toReg(maybe_reg: OptReg) Reg {
+        std.debug.assert(maybe_reg != .none);
+        return @enumFromInt(@intFromEnum(maybe_reg));
+    }
+
+    comptime {
+        std.debug.assert(std.enums.fromInt(Reg, @intFromEnum(OptReg.none)) == null);
+    }
 };
 
 pub const Mem = struct {
@@ -176,7 +208,7 @@ pub const Mem = struct {
         off: u64,
 
         pub const Rm = struct {
-            index: Reg,
+            index: OptReg,
             scale: Scale,
             disp: i32,
         };
@@ -335,20 +367,26 @@ fn printMem(term: std.Io.Terminal, mem: Mem) !void {
         },
         .rm => |rm| {
             term.setColor(.cyan) catch {};
-            try writer.print("{s}", .{@tagName(rm.index)});
 
-            if (rm.scale != .@"1") {
+            if (rm.index != .none) {
+                try writer.print("{s}", .{@tagName(rm.index.toReg())});
+
+                if (rm.scale != .@"1") {
+                    term.setColor(.reset) catch {};
+                    try writer.print(" * ", .{});
+                    term.setColor(.blue) catch {};
+                    try writer.print("{}", .{rm.scale.toFactor()});
+                }
+
                 term.setColor(.reset) catch {};
-                try writer.print(" * ", .{});
-                term.setColor(.blue) catch {};
-                try writer.print(" * {}", .{rm.scale.toFactor()});
-            }
 
-            term.setColor(.reset) catch {};
-            if (rm.disp > 0) {
-                try writer.print(" + ", .{});
+                if (rm.disp > 0) {
+                    try writer.print(" + ", .{});
+                } else if (rm.disp < 0) {
+                    try writer.print(" - ", .{});
+                }
             } else if (rm.disp < 0) {
-                try writer.print(" - ", .{});
+                try writer.print("-", .{});
             }
 
             term.setColor(.blue) catch {};
