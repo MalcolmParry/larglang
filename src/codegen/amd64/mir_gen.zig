@@ -37,12 +37,19 @@ pub fn gen(alloc: std.mem.Allocator, ir: Ir) !Mir {
         for (ir_block.insts.items, 0..) |ir_inst, ir_inst_id| {
             switch (ir_inst.tag) {
                 .no_op => {},
-                .load => {
+                .load, .load_b => {
                     const mir_inst_id = mir_block.insts.len;
 
-                    mir_block.insts.appendAssumeCapacity(.{ .tag = .load, .data = .{
-                        .unary = translateValRef(val_map, ir_inst.data.unary),
-                    } });
+                    mir_block.insts.appendAssumeCapacity(.{
+                        .tag = switch (ir_inst.tag) {
+                            .load => .load,
+                            .load_b => .load_b,
+                            else => unreachable,
+                        },
+                        .data = .{
+                            .unary = translateValRef(val_map, ir_inst.data.unary),
+                        },
+                    });
 
                     val_map.putAssumeCapacity(.{
                         .tag = .inst,
@@ -53,7 +60,7 @@ pub fn gen(alloc: std.mem.Allocator, ir: Ir) !Mir {
                         .id = @intCast(mir_inst_id),
                     });
                 },
-                .add, .sub, .mul, .div, .less, .equal, .more, .store => {
+                .add, .sub, .mul, .div, .less, .equal, .more, .store, .store_b => {
                     const mir_inst_id = mir_block.insts.len;
                     const ir_data = ir_inst.data.bin;
                     const mir_data: Mir.Inst.Data.Bin = .{
@@ -70,6 +77,7 @@ pub fn gen(alloc: std.mem.Allocator, ir: Ir) !Mir {
                         .equal => .cmp_eq,
                         .more => .cmp_ugt,
                         .store => .store,
+                        .store_b => .store_b,
                         else => unreachable,
                     };
 

@@ -53,7 +53,7 @@ pub const Node = struct {
         /// uses data.token, stores name
         label_decl,
 
-        /// uses data.token_node
+        /// uses data.node_node
         stat_assign,
         /// uses data.node
         stat_ret,
@@ -88,6 +88,7 @@ pub const Node = struct {
 
         // unary expressions, all use data.node
         expr_stack_alloc,
+        expr_byte_deref,
     };
 
     pub const Data = union {
@@ -429,7 +430,7 @@ pub const Parser = struct {
         const first_id = parser.head;
         const first = parser.popToken();
 
-        first_token_switch: switch (first.kind) {
+        switch (first.kind) {
             .kw_if => {
                 _ = try parser.popExpectToken(.lparen);
                 const cond = try parser.parseExpr(0);
@@ -472,25 +473,6 @@ pub const Parser = struct {
                     } },
                 });
             },
-            .ident => {
-                // very hacky way of making it so if there isnt an assignment here
-                // it gets processed as an expression evaluation
-                if (parser.peekToken(0).kind != .equal)
-                    continue :first_token_switch .int;
-
-                _ = try parser.popExpectToken(.equal);
-                const expr = try parser.parseExpr(0);
-                _ = try parser.popExpectToken(.semicolon);
-
-                try statements.append(alloc, .{
-                    .kind = .stat_assign,
-                    .main_token_id = first_id,
-                    .data = .{ .token_node = .{
-                        .token = first_id,
-                        .node = expr,
-                    } },
-                });
-            },
             .kw_ret => {
                 const expr = try parser.parseExpr(0);
                 _ = try parser.popExpectToken(.semicolon);
@@ -504,14 +486,30 @@ pub const Parser = struct {
             else => {
                 parser.head -= 1;
                 const first_token = parser.head;
-                const expr = try parser.parseExpr(0);
-                _ = try parser.popExpectToken(.semicolon);
+                const l_expr = try parser.parseExpr(0);
 
-                try statements.append(alloc, .{
-                    .kind = .stat_eval,
-                    .main_token_id = first_token,
-                    .data = .{ .node = expr },
-                });
+                const next_token = parser.popToken();
+                switch (next_token.kind) {
+                    .semicolon => try statements.append(alloc, .{
+                        .kind = .stat_eval,
+                        .main_token_id = first_token,
+                        .data = .{ .node = l_expr },
+                    }),
+                    .equal => {
+                        const r_expr = try parser.parseExpr(0);
+                        _ = try parser.popExpectToken(.semicolon);
+
+                        try statements.append(alloc, .{
+                            .kind = .stat_assign,
+                            .main_token_id = first_token,
+                            .data = .{ .node_node = .{
+                                .left = l_expr,
+                                .right = r_expr,
+                            } },
+                        });
+                    },
+                    else => try parser.expectToken(next_token, .semicolon),
+                }
             },
         }
     }
@@ -588,11 +586,15 @@ pub const Parser = struct {
                 _ = try parser.popExpectToken(.rparen);
                 return expr;
             },
-            .kw_stack_alloc => {
+            .kw_stack_alloc, .caret => {
                 const term = try parser.parseTerm();
                 const node_id = parser.nodes.len;
                 try parser.nodes.append(alloc, .{
-                    .kind = .expr_stack_alloc,
+                    .kind = switch (first.kind) {
+                        .kw_stack_alloc => .expr_stack_alloc,
+                        .caret => .expr_byte_deref,
+                        else => unreachable,
+                    },
                     .main_token_id = first_id,
                     .data = .{ .node = term },
                 });
@@ -834,18 +836,16 @@ fn printBlock(term: std.Io.Terminal, ast: Ast, block: Node, indent: usize) !void
         for (0..indent) |_| try writer.print("    ", .{});
         switch (stat.kind) {
             .stat_assign => {
-                const data = stat.data.token_node;
+                const data = stat.data.node_node;
 
                 term.setColor(.yellow) catch {};
                 try writer.print("assign ", .{});
-                term.setColor(.green) catch {};
-                try writer.print("{s}", .{
-                    ast.tokens.get(data.token).loc.get(ast.src),
-                });
-                term.setColor(.reset) catch {};
-                try writer.print(" = ", .{});
 
-                try printExpr(term, ast, ast.nodes.get(data.node));
+                term.setColor(.reset) catch {};
+                try printExpr(term, ast, ast.nodes.get(data.left));
+
+                try writer.print(" = ", .{});
+                try printExpr(term, ast, ast.nodes.get(data.right));
                 try writer.print("\n", .{});
             },
             .stat_ret => {
@@ -962,6 +962,13 @@ fn printExpr(term: std.Io.Terminal, ast: Ast, node: Node) !void {
             try printExpr(term, ast, ast.nodes.get(data));
             try writer.print(")", .{});
         },
+        .expr_byte_deref => {
+            const data = node.data.node;
+
+            try writer.print("^(", .{});
+            try printExpr(term, ast, ast.nodes.get(data));
+            try writer.print(")", .{});
+        },
         else => unreachable,
     }
 }
@@ -981,17 +988,17 @@ pub fn dump(ast: Ast, term: std.Io.Terminal) !void {
                 const slice = node.data.node_slice;
                 try term.writer.print("nodes[{}..][0..{}]", .{ slice.first_node, slice.len });
             },
-            .stat_assign, .global_var => {
+            .global_var => {
                 const data = node.data.token_node;
                 try term.writer.print("tokens[{}], node[{}]", .{ data.token, data.node });
             },
-            .stat_ret, .stat_eval, .expr_stack_alloc => {
+            .stat_ret, .stat_eval, .expr_stack_alloc, .expr_byte_deref => {
                 try term.writer.print("nodes[{}]", .{node.data.node});
             },
             .expr_lit_int => {
                 try term.writer.print("int({})", .{node.data.int});
             },
-            .expr_add, .expr_sub, .expr_mul, .expr_div, .expr_equal, .expr_less, .expr_more, .stat_while => {
+            .expr_add, .expr_sub, .expr_mul, .expr_div, .expr_equal, .expr_less, .expr_more, .stat_while, .stat_assign => {
                 const data = node.data.node_node;
                 try term.writer.print("nodes[{}], nodes[{}]", .{ data.left, data.right });
             },

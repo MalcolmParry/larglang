@@ -607,10 +607,10 @@ pub fn validate(ir: Ir) void {
         for (block.insts.items, 0..) |inst, inst_id| {
             switch (inst.tag) {
                 .no_op => unreachable,
-                .load => {
+                .load, .load_b => {
                     validateRef(ir, block, inst.data.unary, @intCast(inst_id));
                 },
-                .add, .sub, .mul, .div, .equal, .less, .more, .store => {
+                .add, .sub, .mul, .div, .equal, .less, .more, .store, .store_b => {
                     const bin = inst.data.bin;
                     validateRef(ir, block, bin.left, @intCast(inst_id));
                     validateRef(ir, block, bin.right, @intCast(inst_id));

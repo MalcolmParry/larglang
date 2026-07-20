@@ -148,8 +148,7 @@ fn compileCodeBlock(
 
         switch (node.kind) {
             .stat_assign => {
-                const data = node.data.token_node;
-                const name = ast.tokens.items(.loc)[data.token].get(ast.src);
+                const data = node.data.node_node;
 
                 const ref = try compileExpr(
                     alloc,
@@ -158,14 +157,36 @@ fn compileCodeBlock(
                     ir,
                     &ir.blocks.items[block_id],
                     &new_ident_map,
-                    data.node,
+                    data.right,
                 );
 
-                if (comp_unit.globals.getIndex(name)) |global_ref| {
-                    const global = try ir.appendImm(alloc, .{ .global_addr = @intCast(global_ref) });
-                    _ = try ir.blocks.items[block_id].appendInst(alloc, .bin(.store, global, ref));
-                } else {
-                    try new_ident_map.put(alloc, name, ref);
+                const l_expr_node = ast.nodes.get(data.left);
+                switch (l_expr_node.kind) {
+                    .expr_ident => {
+                        const name = ast.tokens.items(.loc)[l_expr_node.main_token_id].get(ast.src);
+
+                        if (comp_unit.globals.getIndex(name)) |global_ref| {
+                            const global = try ir.appendImm(alloc, .{ .global_addr = @intCast(global_ref) });
+                            _ = try ir.blocks.items[block_id].appendInst(alloc, .bin(.store, global, ref));
+                        } else {
+                            try new_ident_map.put(alloc, name, ref);
+                        }
+                    },
+                    .expr_byte_deref => {
+                        const ldata = l_expr_node.data.node;
+                        const addr_ref = try compileExpr(
+                            alloc,
+                            ast,
+                            comp_unit,
+                            ir,
+                            &ir.blocks.items[block_id],
+                            &new_ident_map,
+                            ldata,
+                        );
+
+                        _ = try ir.blocks.items[block_id].appendInst(alloc, .bin(.store_b, addr_ref, ref));
+                    },
+                    else => return error.CompileFailed,
                 }
             },
             .stat_ret => {
@@ -436,6 +457,13 @@ pub fn compileExpr(alloc: std.mem.Allocator, ast: Ast, comp_unit: CompUnit, ir: 
                 .tag = .stack_addr,
                 .data = @intCast(stack_slot_id),
             };
+        },
+        .expr_byte_deref => {
+            const d = node.data.node;
+
+            const addr_ref = try compileExpr(alloc, ast, comp_unit, ir, block, ident_map, d);
+
+            return block.appendInst(alloc, .unary(.load_b, addr_ref));
         },
         else => unreachable,
     }

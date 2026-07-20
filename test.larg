@@ -50,7 +50,27 @@ label print;
 thing = 5;
 strdef msg, len =
 \\hello world
+\\
 ;
+
+fn printNum(n) {
+	buffer = stack_alloc 20;
+
+	^(buffer +  0) = 104;
+	^(buffer +  1) = 101;
+	^(buffer +  2) = 108;
+	^(buffer +  3) = 108;
+	^(buffer +  4) = 111;
+	^(buffer +  5) =  32;
+	^(buffer +  6) = 119;
+	^(buffer +  7) = 111;
+	^(buffer +  8) = 114;
+	^(buffer +  9) = 108;
+	^(buffer + 10) = 100;
+	^(buffer + 11) =  10;
+
+	print(buffer, 12);
+}
 
 fn test4(n) {
 	thing = thing + n;
@@ -60,6 +80,7 @@ fn test4(n) {
     y = 0;
 
 	print(msg, len);
+	printNum(69420);
 
     while (i < n) {
         y = x * 2;
@@ -67,11 +88,6 @@ fn test4(n) {
     }
 
     return y;
-}
-
-fn printNum(n) {
-	buffer = stack_alloc 20;
-	return buffer;
 }
 
 asm(

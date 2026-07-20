@@ -196,7 +196,7 @@ pub const OptReg = enum(Reg.TagInt) {
 
 pub const Mem = struct {
     base: Base,
-    mod: Mod,
+    mod: Mod = .{ .rm = .{} },
 
     pub const Base = union(enum) {
         none,
@@ -209,9 +209,9 @@ pub const Mem = struct {
         off: u64,
 
         pub const Rm = struct {
-            index: OptReg,
-            scale: Scale,
-            disp: i32,
+            index: OptReg = .none,
+            scale: Scale = .@"1",
+            disp: i32 = 0,
         };
     };
 

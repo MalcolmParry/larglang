@@ -37,6 +37,7 @@ pub const Token = struct {
         minus,
         asterisk,
         slash,
+        caret,
 
         kw_fn,
         kw_ret,
@@ -159,6 +160,7 @@ pub fn nextToken(lexer: *Lexer) Token {
                 '+' => .plus,
                 '-' => .minus,
                 '*' => .asterisk,
+                '^' => .caret,
                 '/' => continue :state .slash,
                 '\\' => continue :state .back_slash,
                 ' ', '\n', '\r', '\t' => {

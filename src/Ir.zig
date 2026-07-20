@@ -148,22 +148,24 @@ pub const Inst = struct {
         more,
 
         load,
+        load_b,
         store,
+        store_b,
 
         call,
 
         pub fn getDataKind(tag: Tag) Data.Kind {
             return switch (tag) {
                 .no_op => .none,
-                .add, .sub, .mul, .div, .equal, .less, .more, .store => .bin,
-                .load => .unary,
+                .add, .sub, .mul, .div, .equal, .less, .more, .store, .store_b => .bin,
+                .load, .load_b => .unary,
                 .call => .val_ref_list,
             };
         }
 
         pub fn hasSideEffects(tag: Tag) bool {
             return switch (tag) {
-                .store, .call => true,
+                .store, .store_b, .call => true,
                 else => false,
             };
         }

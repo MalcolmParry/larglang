@@ -105,18 +105,35 @@ pub fn emitRamir(alloc: std.mem.Allocator, mir: Mir) !Ramir {
 
             switch (inst.tag) {
                 .no_op => continue,
-                .load => {
+                .load, .load_b => {
                     const ref = inst.data.unary;
-                    std.debug.assert(ref.tag == .imm);
+
+                    if (inst.tag == .load_b) {
+                        try ra_block.insts.append(alloc, .{
+                            .tag = .xor,
+                            .data_kind = .rr,
+                            .data = .{
+                                .rr = .{
+                                    .r1 = .eax,
+                                    .r2 = .eax,
+                                },
+                            },
+                        });
+                    }
+
+                    try putGlobalRefInReg(state, ra_block, .rcx, globalRefFromLocal(@intCast(block_id), ref));
 
                     try ra_block.insts.append(alloc, .{
                         .tag = .mov,
                         .data_kind = .rm,
                         .data = .{ .rm = .{
-                            .r = .rax,
+                            .r = switch (inst.tag) {
+                                .load => .rax,
+                                .load_b => .al,
+                                else => unreachable,
+                            },
                             .m = .{
-                                .base = .{ .global = mir.imms.items[ref.id].global_addr },
-                                .mod = .{ .off = 0 },
+                                .base = .{ .reg = .rcx },
                             },
                         } },
                     });
@@ -128,19 +145,22 @@ pub fn emitRamir(alloc: std.mem.Allocator, mir: Mir) !Ramir {
                         },
                     }) orelse unreachable);
                 },
-                .store => {
+                .store, .store_b => {
                     const bin = inst.data.bin;
                     try putGlobalRefInReg(state, ra_block, .rax, globalRefFromLocal(@intCast(block_id), bin.right));
+                    try putGlobalRefInReg(state, ra_block, .rcx, globalRefFromLocal(@intCast(block_id), bin.left));
 
-                    std.debug.assert(bin.left.tag == .imm);
                     try ra_block.insts.append(alloc, .{
                         .tag = .mov,
                         .data_kind = .mr,
                         .data = .{ .rm = .{
-                            .r = .rax,
+                            .r = switch (inst.tag) {
+                                .store => .rax,
+                                .store_b => .al,
+                                else => unreachable,
+                            },
                             .m = .{
-                                .base = .{ .global = mir.imms.items[bin.left.id].global_addr },
-                                .mod = .{ .off = 0 },
+                                .base = .{ .reg = .rcx },
                             },
                         } },
                     });
@@ -359,8 +379,6 @@ fn putGlobalRefInReg(state: State, block: *Ramir.Block, reg: Ramir.Reg, ref: Glo
                 .m = .{
                     .base = .{ .reg = .rbp },
                     .mod = .{ .rm = .{
-                        .index = .none,
-                        .scale = .@"1",
                         .disp = state.stack_slot_offsets[id],
                     } },
                 },
@@ -392,8 +410,6 @@ fn putAllocInReg(alloc: std.mem.Allocator, block: *Ramir.Block, reg: Ramir.Reg, 
                     .m = .{
                         .base = .{ .reg = .rbp },
                         .mod = .{ .rm = .{
-                            .index = .none,
-                            .scale = .@"1",
                             .disp = -@as(i32, @intCast(stack)) - 8,
                         } },
                     },
@@ -425,8 +441,6 @@ fn storeRegInAlloc(alloc: std.mem.Allocator, block: *Ramir.Block, reg: Ramir.Reg
                     .m = .{
                         .base = .{ .reg = .rbp },
                         .mod = .{ .rm = .{
-                            .index = .none,
-                            .scale = .@"1",
                             .disp = -@as(i32, @intCast(stack)) - 8,
                         } },
                     },

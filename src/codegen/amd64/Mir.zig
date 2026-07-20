@@ -56,13 +56,15 @@ pub const Inst = struct {
         cmp_ugt,
 
         load,
+        load_b,
         store,
+        store_b,
 
         call,
 
         pub fn hasSideEffects(tag: Tag) bool {
             return switch (tag) {
-                .store, .call => true,
+                .store, .store_b, .call => true,
                 else => false,
             };
         }
@@ -70,8 +72,8 @@ pub const Inst = struct {
         pub fn getDataKind(tag: Tag) Data.Kind {
             return switch (tag) {
                 .no_op => .none,
-                .load => .unary,
-                .add, .sub, .mul, .udiv, .cmp_eq, .cmp_ult, .cmp_ugt, .store => .bin,
+                .load, .load_b => .unary,
+                .add, .sub, .mul, .udiv, .cmp_eq, .cmp_ult, .cmp_ugt, .store, .store_b => .bin,
                 .call => .val_ref_list,
             };
         }
@@ -218,8 +220,8 @@ pub fn print(mir: Mir, term: std.Io.Terminal) !void {
 
             switch (inst.tag) {
                 .no_op => {},
-                .load => try printValRef(term, mir, inst.data.unary),
-                .add, .sub, .mul, .udiv, .cmp_ult, .cmp_eq, .cmp_ugt, .store => {
+                .load, .load_b => try printValRef(term, mir, inst.data.unary),
+                .add, .sub, .mul, .udiv, .cmp_ult, .cmp_eq, .cmp_ugt, .store, .store_b => {
                     const data = inst.data.bin;
                     try printValRef(term, mir, data.left);
                     try writer.print(", ", .{});

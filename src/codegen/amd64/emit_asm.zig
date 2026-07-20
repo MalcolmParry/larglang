@@ -126,7 +126,7 @@ fn printImm(writer: *std.Io.Writer, comp_unit: CompUnit, ramir: Ramir, imm: Rami
 
     switch (val) {
         .int => |int| try writer.print("{}", .{int}),
-        .global_addr => |global_ref| try writer.print("{s}", .{comp_unit.globals.keys()[global_ref]}),
+        .global_addr => |global_ref| try writer.print("offset {s}", .{comp_unit.globals.keys()[global_ref]}),
         .data_addr => |data_addr| try writer.print("offset D{}", .{data_addr}),
         .func_addr => |func_id| try writer.print("offset {s}", .{comp_unit.funcs.keys()[func_id]}),
         .label_addr => |label_id| try writer.print("offset {s}", .{comp_unit.extern_labels.keys()[label_id]}),
