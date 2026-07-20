@@ -218,6 +218,20 @@ pub fn print(ir: Ir, term: std.Io.Terminal) std.Io.Writer.Error!void {
     const writer = term.writer;
     try writer.print("fn '{s}':\n", .{ir.link_sym});
 
+    term.setColor(.yellow) catch {};
+    try writer.print("stack slots", .{});
+    term.setColor(.reset) catch {};
+    try writer.print(" [", .{});
+    for (ir.stack_slots.items, 0..) |slot, slot_id| {
+        term.setColor(.reset) catch {};
+        if (slot_id != 0) try writer.print(", ", .{});
+        term.setColor(.blue) catch {};
+        try writer.print("0x{x}", .{slot.size});
+    }
+
+    term.setColor(.reset) catch {};
+    try writer.print("]\n", .{});
+
     for (ir.blocks.items, 0..) |block, block_id| {
         term.setColor(.red) catch {};
         try writer.print("@{}", .{block_id});

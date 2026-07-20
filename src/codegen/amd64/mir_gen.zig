@@ -10,8 +10,15 @@ pub fn gen(alloc: std.mem.Allocator, ir: Ir) !Mir {
         .blocks = try .initCapacity(alloc, ir.blocks.items.len),
         .imms = try ir.imms.clone(alloc),
         .extra_val_refs = .empty,
+        .stack_slots = try .initCapacity(alloc, ir.stack_slots.items.len),
     };
     errdefer mir.deinit(alloc);
+
+    for (ir.stack_slots.items) |ir_slot| {
+        mir.stack_slots.appendAssumeCapacity(.{
+            .size = ir_slot.size,
+        });
+    }
 
     var val_map: ValMap = .empty;
     defer val_map.deinit(alloc);
@@ -99,7 +106,6 @@ pub fn gen(alloc: std.mem.Allocator, ir: Ir) !Mir {
                         } },
                     });
                 },
-                .stack_alloc => {},
             }
         }
 
@@ -152,6 +158,11 @@ fn translateValRef(map: ValMap, ir_ref: Ir.ValueRef) Mir.ValueRef {
         },
         .imm => .{
             .tag = .imm,
+            .class = .gp,
+            .id = ir_ref.data,
+        },
+        .stack_addr => .{
+            .tag = .stack_addr,
             .class = .gp,
             .id = ir_ref.data,
         },

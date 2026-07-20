@@ -9,16 +9,19 @@ link_sym: []const u8,
 blocks: std.ArrayList(Block),
 imms: std.ArrayList(CompUnit.Immediate),
 extra_val_refs: std.ArrayList(ValueRef),
+stack_slots: std.ArrayList(StackSlot),
 
 pub fn deinit(mir: *Mir, alloc: std.mem.Allocator) void {
     for (mir.blocks.items) |*b| b.deinit(alloc);
     mir.blocks.deinit(alloc);
     mir.imms.deinit(alloc);
     mir.extra_val_refs.deinit(alloc);
+    mir.stack_slots.deinit(alloc);
 }
 
 pub const ImmId = u26;
 pub const ArgId = u26;
+pub const StackSlotId = u26;
 pub const Block = struct {
     arg_count: u32,
     insts: std.MultiArrayList(Inst),
@@ -29,6 +32,10 @@ pub const Block = struct {
         block.insts.deinit(alloc);
         block.term.deinit(alloc);
     }
+};
+
+pub const StackSlot = struct {
+    size: u32,
 };
 
 pub const Inst = struct {
@@ -157,6 +164,7 @@ pub const ValueRef = packed struct(u32) {
         inst,
         arg,
         imm,
+        stack_addr,
     };
 
     pub const Class = enum(u4) {
@@ -167,6 +175,20 @@ pub const ValueRef = packed struct(u32) {
 pub fn print(mir: Mir, term: std.Io.Terminal) !void {
     const writer = term.writer;
     try writer.print("fn '{s}':\n", .{mir.link_sym});
+
+    term.setColor(.yellow) catch {};
+    try writer.print("stack slots", .{});
+    term.setColor(.reset) catch {};
+    try writer.print(" [", .{});
+    for (mir.stack_slots.items, 0..) |slot, slot_id| {
+        term.setColor(.reset) catch {};
+        if (slot_id != 0) try writer.print(", ", .{});
+        term.setColor(.blue) catch {};
+        try writer.print("0x{x}", .{slot.size});
+    }
+
+    term.setColor(.reset) catch {};
+    try writer.print("]\n", .{});
 
     for (mir.blocks.items, 0..) |block, block_id| {
         term.setColor(.red) catch {};
@@ -278,12 +300,14 @@ fn printValRef(term: std.Io.Terminal, mir: Mir, ref: ValueRef) !void {
         .inst => .green,
         .arg => .magenta,
         .imm => .blue,
+        .stack_addr => .yellow,
     }) catch {};
 
     switch (ref.tag) {
         .inst => try writer.print("${}", .{ref.id}),
         .arg => try writer.print("%{}", .{ref.id}),
         .imm => try mir.imms.items[ref.id].print(term),
+        .stack_addr => try writer.print("^{}", .{ref.id}),
     }
 
     term.setColor(.reset) catch {};

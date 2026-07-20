@@ -7,6 +7,7 @@ const GlobalValRef = union(enum) {
     imm: Mir.ImmId,
     inst: Local,
     arg: Local,
+    stack_addr: Mir.StackSlotId,
 
     pub const Local = struct {
         id: Mir.Inst.Id,
@@ -21,10 +22,29 @@ const Alloc = union(enum) {
     pub const Map = std.AutoHashMapUnmanaged(GlobalValRef, Alloc);
 };
 
+const State = struct {
+    alloc: std.mem.Allocator,
+    mir: *const Mir,
+    alloc_map: *Alloc.Map,
+    stack_slot_offsets: []i32,
+    ramir: *Ramir,
+};
+
 pub fn emitRamir(alloc: std.mem.Allocator, mir: Mir) !Ramir {
     var alloc_result = try allocRegs(alloc, mir);
     const map = &alloc_result.map;
     defer map.deinit(alloc);
+
+    var stack_top: u31 = @intCast(alloc_result.stack_top);
+    const stack_slot_offsets = try alloc.alloc(i32, mir.stack_slots.items.len);
+    defer alloc.free(stack_slot_offsets);
+
+    for (mir.stack_slots.items, 0..) |slot, slot_id| {
+        stack_top += @intCast(slot.size);
+        stack_slot_offsets[slot_id] = -@as(i32, stack_top);
+    }
+
+    stack_top = std.mem.alignForward(u31, stack_top, 16);
 
     var ramir: Ramir = .{
         .link_sym = mir.link_sym,
@@ -33,12 +53,20 @@ pub fn emitRamir(alloc: std.mem.Allocator, mir: Mir) !Ramir {
     };
     errdefer ramir.deinit(alloc);
 
+    const state: State = .{
+        .alloc = alloc,
+        .mir = &mir,
+        .alloc_map = map,
+        .stack_slot_offsets = stack_slot_offsets,
+        .ramir = &ramir,
+    };
+
     for (mir.blocks.items, 0..) |block, block_id| {
-        var ra_block: Ramir.Block = .{
+        const ra_block = ramir.blocks.addOneAssumeCapacity();
+        ra_block.* = .{
             .insts = try .initCapacity(alloc, block.insts.len),
             .term = .none,
         };
-        errdefer ra_block.deinit(alloc);
 
         if (block_id == 0) {
             try ra_block.insts.append(alloc, .{
@@ -53,7 +81,7 @@ pub fn emitRamir(alloc: std.mem.Allocator, mir: Mir) !Ramir {
                 .data = .{ .rr = .{ .r1 = .rbp, .r2 = .rsp } },
             });
 
-            try ramir.imms.append(alloc, .{ .int = alloc_result.stack_top });
+            try ramir.imms.append(alloc, .{ .int = stack_top });
             try ra_block.insts.append(alloc, .{
                 .tag = .sub,
                 .data_kind = .ri,
@@ -63,7 +91,7 @@ pub fn emitRamir(alloc: std.mem.Allocator, mir: Mir) !Ramir {
             if (block.arg_count > sysv_arg_order.len) return error.TooManyParameters;
 
             for (0..block.arg_count) |arg_id| {
-                try storeRegInAlloc(alloc, &ra_block, sysv_arg_order[arg_id], map.get(.{
+                try storeRegInAlloc(alloc, ra_block, sysv_arg_order[arg_id], map.get(.{
                     .arg = .{
                         .block = @intCast(block_id),
                         .id = @intCast(arg_id),
@@ -93,7 +121,7 @@ pub fn emitRamir(alloc: std.mem.Allocator, mir: Mir) !Ramir {
                         } },
                     });
 
-                    try storeRegInAlloc(alloc, &ra_block, .rax, map.get(.{
+                    try storeRegInAlloc(alloc, ra_block, .rax, map.get(.{
                         .inst = .{
                             .block = @intCast(block_id),
                             .id = @intCast(inst_id),
@@ -102,7 +130,7 @@ pub fn emitRamir(alloc: std.mem.Allocator, mir: Mir) !Ramir {
                 },
                 .store => {
                     const bin = inst.data.bin;
-                    try putGlobalRefInReg(alloc, map.*, &ra_block, .rax, globalRefFromLocal(@intCast(block_id), bin.right));
+                    try putGlobalRefInReg(state, ra_block, .rax, globalRefFromLocal(@intCast(block_id), bin.right));
 
                     std.debug.assert(bin.left.tag == .imm);
                     try ra_block.insts.append(alloc, .{
@@ -119,8 +147,8 @@ pub fn emitRamir(alloc: std.mem.Allocator, mir: Mir) !Ramir {
                 },
                 .add, .sub, .mul, .udiv, .cmp_eq, .cmp_ult, .cmp_ugt => {
                     const bin = inst.data.bin;
-                    try putGlobalRefInReg(alloc, map.*, &ra_block, .rax, globalRefFromLocal(@intCast(block_id), bin.left));
-                    try putGlobalRefInReg(alloc, map.*, &ra_block, .rcx, globalRefFromLocal(@intCast(block_id), bin.right));
+                    try putGlobalRefInReg(state, ra_block, .rax, globalRefFromLocal(@intCast(block_id), bin.left));
+                    try putGlobalRefInReg(state, ra_block, .rcx, globalRefFromLocal(@intCast(block_id), bin.right));
 
                     switch (inst.tag) {
                         .udiv => {
@@ -139,7 +167,7 @@ pub fn emitRamir(alloc: std.mem.Allocator, mir: Mir) !Ramir {
                                 .data = .{ .r = .rcx },
                             });
 
-                            try storeRegInAlloc(alloc, &ra_block, .rax, map.get(.{
+                            try storeRegInAlloc(alloc, ra_block, .rax, map.get(.{
                                 .inst = .{
                                     .block = @intCast(block_id),
                                     .id = @intCast(inst_id),
@@ -162,7 +190,7 @@ pub fn emitRamir(alloc: std.mem.Allocator, mir: Mir) !Ramir {
                                 },
                             });
 
-                            try storeRegInAlloc(alloc, &ra_block, .rax, map.get(.{
+                            try storeRegInAlloc(alloc, ra_block, .rax, map.get(.{
                                 .inst = .{
                                     .block = @intCast(block_id),
                                     .id = @intCast(inst_id),
@@ -176,13 +204,13 @@ pub fn emitRamir(alloc: std.mem.Allocator, mir: Mir) !Ramir {
                     const data = inst.data.val_ref_list;
                     const ref_slice = mir.extra_val_refs.items[data.start..][0..data.len];
 
-                    try putGlobalRefInReg(alloc, map.*, &ra_block, .rax, globalRefFromLocal(@intCast(block_id), ref_slice[0]));
+                    try putGlobalRefInReg(state, ra_block, .rax, globalRefFromLocal(@intCast(block_id), ref_slice[0]));
 
                     const args = ref_slice[1..];
                     if (args.len > sysv_arg_order.len) return error.TooManyArgs;
 
                     for (args, 0..) |ref, arg_id| {
-                        try putGlobalRefInReg(alloc, map.*, &ra_block, sysv_arg_order[arg_id], globalRefFromLocal(@intCast(block_id), ref));
+                        try putGlobalRefInReg(state, ra_block, sysv_arg_order[arg_id], globalRefFromLocal(@intCast(block_id), ref));
                     }
 
                     try ra_block.insts.append(alloc, .{
@@ -191,7 +219,7 @@ pub fn emitRamir(alloc: std.mem.Allocator, mir: Mir) !Ramir {
                         .data = .{ .r = .rax },
                     });
 
-                    try storeRegInAlloc(alloc, &ra_block, .rax, map.get(.{
+                    try storeRegInAlloc(alloc, ra_block, .rax, map.get(.{
                         .inst = .{
                             .block = @intCast(block_id),
                             .id = @intCast(inst_id),
@@ -205,9 +233,8 @@ pub fn emitRamir(alloc: std.mem.Allocator, mir: Mir) !Ramir {
             .none => unreachable,
             .ret => |ref| blk: {
                 try putGlobalRefInReg(
-                    alloc,
-                    map.*,
-                    &ra_block,
+                    state,
+                    ra_block,
                     .rax,
                     globalRefFromLocal(@intCast(block_id), ref),
                 );
@@ -233,14 +260,14 @@ pub fn emitRamir(alloc: std.mem.Allocator, mir: Mir) !Ramir {
                 break :blk .not_reachable;
             },
             .jmp => |jmp| blk: {
-                try storeJmpArgs(alloc, map.*, @intCast(block_id), &ra_block, jmp);
+                try storeJmpArgs(state, @intCast(block_id), jmp);
                 break :blk .{ .jmp = @intCast(jmp.block_id) };
             },
             .branch_bool => |b| blk: {
-                try storeJmpArgs(alloc, map.*, @intCast(block_id), &ra_block, b.then_jmp);
-                try storeJmpArgs(alloc, map.*, @intCast(block_id), &ra_block, b.else_jmp);
+                try storeJmpArgs(state, @intCast(block_id), b.then_jmp);
+                try storeJmpArgs(state, @intCast(block_id), b.else_jmp);
 
-                try putGlobalRefInReg(alloc, map.*, &ra_block, .rax, globalRefFromLocal(@intCast(block_id), b.cond));
+                try putGlobalRefInReg(state, ra_block, .rax, globalRefFromLocal(@intCast(block_id), b.cond));
                 try ramir.imms.append(alloc, .{ .int = 0 });
                 try ra_block.insts.append(alloc, .{
                     .tag = .cmp,
@@ -255,11 +282,11 @@ pub fn emitRamir(alloc: std.mem.Allocator, mir: Mir) !Ramir {
                 } };
             },
             .branch_cmp => |b| blk: {
-                try storeJmpArgs(alloc, map.*, @intCast(block_id), &ra_block, b.then_jmp);
-                try storeJmpArgs(alloc, map.*, @intCast(block_id), &ra_block, b.else_jmp);
+                try storeJmpArgs(state, @intCast(block_id), b.then_jmp);
+                try storeJmpArgs(state, @intCast(block_id), b.else_jmp);
 
-                try putGlobalRefInReg(alloc, map.*, &ra_block, .rax, globalRefFromLocal(@intCast(block_id), b.left));
-                try putGlobalRefInReg(alloc, map.*, &ra_block, .rcx, globalRefFromLocal(@intCast(block_id), b.right));
+                try putGlobalRefInReg(state, ra_block, .rax, globalRefFromLocal(@intCast(block_id), b.left));
+                try putGlobalRefInReg(state, ra_block, .rcx, globalRefFromLocal(@intCast(block_id), b.right));
                 try ra_block.insts.append(alloc, .{
                     .tag = .cmp,
                     .data_kind = .rr,
@@ -277,18 +304,19 @@ pub fn emitRamir(alloc: std.mem.Allocator, mir: Mir) !Ramir {
                 } };
             },
         };
-
-        ramir.blocks.appendAssumeCapacity(ra_block);
     }
 
     return ramir;
 }
 
-fn storeJmpArgs(alloc: std.mem.Allocator, map: Alloc.Map, block_id: Ramir.Block.Id, block: *Ramir.Block, jmp: Mir.Term.Jmp) !void {
+fn storeJmpArgs(state: State, block_id: Ramir.Block.Id, jmp: Mir.Term.Jmp) !void {
+    const alloc = state.alloc;
+    const block = &state.ramir.blocks.items[block_id];
+
     for (jmp.args.items, 0..) |ref, arg_id| {
         const global = globalRefFromLocal(block_id, ref);
-        try putGlobalRefInReg(alloc, map, block, .rax, global);
-        try storeRegInAlloc(alloc, block, .rax, map.get(.{ .arg = .{
+        try putGlobalRefInReg(state, block, .rax, global);
+        try storeRegInAlloc(alloc, block, .rax, state.alloc_map.get(.{ .arg = .{
             .block = @intCast(jmp.block_id),
             .id = @intCast(arg_id),
         } }) orelse unreachable);
@@ -304,11 +332,15 @@ fn globalRefFromLocal(block_id: Mir.Block.Id, ref: Mir.ValueRef) GlobalValRef {
     return switch (ref.tag) {
         .inst => .{ .inst = local },
         .arg => .{ .arg = local },
+        .stack_addr => .{ .stack_addr = ref.id },
         .imm => .{ .imm = ref.id },
     };
 }
 
-fn putGlobalRefInReg(alloc: std.mem.Allocator, map: Alloc.Map, block: *Ramir.Block, reg: Ramir.Reg, ref: GlobalValRef) !void {
+fn putGlobalRefInReg(state: State, block: *Ramir.Block, reg: Ramir.Reg, ref: GlobalValRef) !void {
+    const alloc = state.alloc;
+    const map = state.alloc_map;
+
     switch (ref) {
         .inst, .arg => try putAllocInReg(alloc, block, reg, map.get(ref) orelse unreachable),
         .imm => |imm| try block.insts.append(alloc, .{
@@ -317,6 +349,21 @@ fn putGlobalRefInReg(alloc: std.mem.Allocator, map: Alloc.Map, block: *Ramir.Blo
             .data = .{ .ri = .{
                 .r = reg,
                 .i = @intCast(imm),
+            } },
+        }),
+        .stack_addr => |id| try block.insts.append(alloc, .{
+            .tag = .lea,
+            .data_kind = .rm,
+            .data = .{ .rm = .{
+                .r = reg,
+                .m = .{
+                    .base = .{ .reg = .rbp },
+                    .mod = .{ .rm = .{
+                        .index = .none,
+                        .scale = .@"1",
+                        .disp = state.stack_slot_offsets[id],
+                    } },
+                },
             } },
         }),
     }

@@ -33,6 +33,7 @@ pub const Inst = struct {
         label,
 
         mov,
+        lea,
         push,
         pop,
         cmp,
