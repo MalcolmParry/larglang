@@ -60,7 +60,7 @@ pub fn gen(alloc: std.mem.Allocator, ir: Ir) !Mir {
                         .id = @intCast(mir_inst_id),
                     });
                 },
-                .add, .sub, .mul, .div, .less, .equal, .more, .store, .store_b => {
+                .add, .sub, .mul, .div, .less, .eq, .neq, .more, .store, .store_b => {
                     const mir_inst_id = mir_block.insts.len;
                     const ir_data = ir_inst.data.bin;
                     const mir_data: Mir.Inst.Data.Bin = .{
@@ -74,7 +74,8 @@ pub fn gen(alloc: std.mem.Allocator, ir: Ir) !Mir {
                         .mul => .mul,
                         .div => .udiv,
                         .less => .cmp_ult,
-                        .equal => .cmp_eq,
+                        .eq => .cmp_eq,
+                        .neq => .cmp_neq,
                         .more => .cmp_ugt,
                         .store => .store,
                         .store_b => .store_b,
@@ -106,12 +107,22 @@ pub fn gen(alloc: std.mem.Allocator, ir: Ir) !Mir {
                         mir.extra_val_refs.appendAssumeCapacity(mir_ref);
                     }
 
+                    const mir_inst_id = mir_block.insts.len;
                     mir_block.insts.appendAssumeCapacity(.{
                         .tag = .call,
                         .data = .{ .val_ref_list = .{
                             .start = @intCast(mir_extra_start),
                             .len = ir_data.len,
                         } },
+                    });
+
+                    val_map.putAssumeCapacity(.{
+                        .tag = .inst,
+                        .data = @intCast(ir_inst_id),
+                    }, .{
+                        .tag = .inst,
+                        .class = .gp,
+                        .id = @intCast(mir_inst_id),
                     });
                 },
             }

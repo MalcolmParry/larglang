@@ -143,7 +143,8 @@ pub const Inst = struct {
         sub,
         mul,
         div,
-        equal,
+        eq,
+        neq,
         less,
         more,
 
@@ -157,7 +158,7 @@ pub const Inst = struct {
         pub fn getDataKind(tag: Tag) Data.Kind {
             return switch (tag) {
                 .no_op => .none,
-                .add, .sub, .mul, .div, .equal, .less, .more, .store, .store_b => .bin,
+                .add, .sub, .mul, .div, .eq, .neq, .less, .more, .store, .store_b => .bin,
                 .load, .load_b => .unary,
                 .call => .val_ref_list,
             };

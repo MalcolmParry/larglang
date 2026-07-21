@@ -165,7 +165,7 @@ pub fn emitRamir(alloc: std.mem.Allocator, mir: Mir) !Ramir {
                         } },
                     });
                 },
-                .add, .sub, .mul, .udiv, .cmp_eq, .cmp_ult, .cmp_ugt => {
+                .add, .sub, .mul, .udiv, .cmp_eq, .cmp_neq, .cmp_ult, .cmp_ugt => {
                     const bin = inst.data.bin;
                     try putGlobalRefInReg(state, ra_block, .rax, globalRefFromLocal(@intCast(block_id), bin.left));
                     try putGlobalRefInReg(state, ra_block, .rcx, globalRefFromLocal(@intCast(block_id), bin.right));
@@ -186,19 +186,11 @@ pub fn emitRamir(alloc: std.mem.Allocator, mir: Mir) !Ramir {
                                 .data_kind = .r,
                                 .data = .{ .r = .rcx },
                             });
-
-                            try storeRegInAlloc(alloc, ra_block, .rax, map.get(.{
-                                .inst = .{
-                                    .block = @intCast(block_id),
-                                    .id = @intCast(inst_id),
-                                },
-                            }) orelse unreachable);
                         },
-                        .add, .sub, .mul => {
+                        .add, .sub => {
                             const tag: Ramir.Inst.Tag = switch (inst.tag) {
                                 .add => .add,
                                 .sub => .sub,
-                                .mul => .mul,
                                 else => unreachable,
                             };
 
@@ -209,16 +201,23 @@ pub fn emitRamir(alloc: std.mem.Allocator, mir: Mir) !Ramir {
                                     .rr = .{ .r1 = .rax, .r2 = .rcx },
                                 },
                             });
-
-                            try storeRegInAlloc(alloc, ra_block, .rax, map.get(.{
-                                .inst = .{
-                                    .block = @intCast(block_id),
-                                    .id = @intCast(inst_id),
-                                },
-                            }) orelse unreachable);
+                        },
+                        .mul => {
+                            try ra_block.insts.append(alloc, .{
+                                .tag = .mul,
+                                .data_kind = .r,
+                                .data = .{ .r = .rcx },
+                            });
                         },
                         else => unreachable,
                     }
+
+                    try storeRegInAlloc(alloc, ra_block, .rax, map.get(.{
+                        .inst = .{
+                            .block = @intCast(block_id),
+                            .id = @intCast(inst_id),
+                        },
+                    }) orelse unreachable);
                 },
                 .call => {
                     const data = inst.data.val_ref_list;
@@ -316,6 +315,7 @@ pub fn emitRamir(alloc: std.mem.Allocator, mir: Mir) !Ramir {
                 break :blk .{ .branch = .{
                     .cond = switch (b.cond) {
                         .eq => .eq,
+                        .neq => .neq,
                         .ult => .ult,
                         .ugt => .ugt,
                     },

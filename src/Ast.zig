@@ -82,7 +82,8 @@ pub const Node = struct {
         expr_sub,
         expr_mul,
         expr_div,
-        expr_equal,
+        expr_eq,
+        expr_neq,
         expr_less,
         expr_more,
 
@@ -515,7 +516,7 @@ pub const Parser = struct {
     }
 
     const ops = [_][]const Node.Kind{
-        &.{ .expr_equal, .expr_less, .expr_more },
+        &.{ .expr_eq, .expr_neq, .expr_less, .expr_more },
         &.{ .expr_add, .expr_sub },
         &.{ .expr_mul, .expr_div },
     };
@@ -529,7 +530,8 @@ pub const Parser = struct {
             const op_token_id = parser.head;
             const op_token = parser.peekToken(0);
             const node_kind: Node.Kind = switch (op_token.kind) {
-                .equal_equal => .expr_equal,
+                .equal_equal => .expr_eq,
+                .bang_equal => .expr_neq,
                 .langle => .expr_less,
                 .rangle => .expr_more,
                 .asterisk => .expr_mul,
@@ -914,7 +916,7 @@ fn printExpr(term: std.Io.Terminal, ast: Ast, node: Node) !void {
             try writer.print("{}", .{node.data.int});
             term.setColor(.reset) catch {};
         },
-        .expr_add, .expr_sub, .expr_mul, .expr_div, .expr_equal, .expr_less, .expr_more => {
+        .expr_add, .expr_sub, .expr_mul, .expr_div, .expr_eq, .expr_neq, .expr_less, .expr_more => {
             const data = node.data.node_node;
             try writer.print("(", .{});
             try printExpr(term, ast, ast.nodes.get(data.left));
@@ -924,7 +926,8 @@ fn printExpr(term: std.Io.Terminal, ast: Ast, node: Node) !void {
                 .expr_sub => "-",
                 .expr_mul => "*",
                 .expr_div => "/",
-                .expr_equal => "==",
+                .expr_eq => "==",
+                .expr_neq => "!=",
                 .expr_less => "<",
                 .expr_more => ">",
                 else => unreachable,
@@ -998,7 +1001,7 @@ pub fn dump(ast: Ast, term: std.Io.Terminal) !void {
             .expr_lit_int => {
                 try term.writer.print("int({})", .{node.data.int});
             },
-            .expr_add, .expr_sub, .expr_mul, .expr_div, .expr_equal, .expr_less, .expr_more, .stat_while, .stat_assign => {
+            .expr_add, .expr_sub, .expr_mul, .expr_div, .expr_eq, .expr_neq, .expr_less, .expr_more, .stat_while, .stat_assign => {
                 const data = node.data.node_node;
                 try term.writer.print("nodes[{}], nodes[{}]", .{ data.left, data.right });
             },

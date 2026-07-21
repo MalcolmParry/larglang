@@ -48,28 +48,39 @@
 
 label print;
 thing = 5;
-strdef msg, len =
+strdef msg, msg_len =
 \\hello world
 \\
 ;
 
 fn printNum(n) {
+	rbuffer = stack_alloc 20;
+	len = 0;
+
+	while (n != 0) {
+		mod = n - (n / 10 * 10);
+		^(rbuffer + len) = 48 + mod;
+		n = n / 10;
+		len = len + 1;
+	}
+
 	buffer = stack_alloc 20;
+	i = 0;
+	while (i < len) {
+		^(buffer + i) = ^(rbuffer + len - i - 1);
+		i = i + 1;
+	}
 
-	^(buffer +  0) = 104;
-	^(buffer +  1) = 101;
-	^(buffer +  2) = 108;
-	^(buffer +  3) = 108;
-	^(buffer +  4) = 111;
-	^(buffer +  5) =  32;
-	^(buffer +  6) = 119;
-	^(buffer +  7) = 111;
-	^(buffer +  8) = 114;
-	^(buffer +  9) = 108;
-	^(buffer + 10) = 100;
-	^(buffer + 11) =  10;
+	print(buffer, len);
+}
 
-	print(buffer, 12);
+label fact;
+fn fact(n) {
+	if (n == 1) {
+		return 1;
+	}
+
+	return n * fact(n - 1);
 }
 
 fn test4(n) {
@@ -79,8 +90,8 @@ fn test4(n) {
     x = 5;
     y = 0;
 
-	print(msg, len);
-	printNum(69420);
+	//print(msg, msg_len);
+	printNum(fact(20));
 
     while (i < n) {
         y = x * 2;

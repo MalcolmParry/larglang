@@ -38,6 +38,7 @@ pub const Token = struct {
         asterisk,
         slash,
         caret,
+        bang_equal,
 
         kw_fn,
         kw_ret,
@@ -126,6 +127,7 @@ const State = enum {
     num,
     equal,
     slash,
+    bang,
     back_slash,
     comment,
     multi_line_str,
@@ -161,6 +163,7 @@ pub fn nextToken(lexer: *Lexer) Token {
                 '-' => .minus,
                 '*' => .asterisk,
                 '^' => .caret,
+                '!' => continue :state .bang,
                 '/' => continue :state .slash,
                 '\\' => continue :state .back_slash,
                 ' ', '\n', '\r', '\t' => {
@@ -234,6 +237,23 @@ pub fn nextToken(lexer: *Lexer) Token {
                 '/' => continue :state .comment,
                 else => {
                     result.kind = .slash;
+                    result.loc.len = 1;
+                    return result;
+                },
+            }
+        },
+        .bang => {
+            lexer.head += 1;
+
+            switch (lexer.peekChar(0)) {
+                '=' => {
+                    result.kind = .bang_equal;
+                    result.loc.len = 2;
+                    lexer.head += 1;
+                    return result;
+                },
+                else => {
+                    result.kind = .err_invalid_char;
                     result.loc.len = 1;
                     return result;
                 },

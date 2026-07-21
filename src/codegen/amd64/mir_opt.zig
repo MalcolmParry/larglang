@@ -11,13 +11,14 @@ pub fn branchBoolToCond(mir: *Mir) !bool {
         const cond_inst = block.insts.get(b.cond.id);
 
         switch (cond_inst.tag) {
-            .cmp_eq, .cmp_ult, .cmp_ugt => {
+            .cmp_eq, .cmp_neq, .cmp_ult, .cmp_ugt => {
                 const bin = cond_inst.data.bin;
 
                 dirty = true;
                 block.term = .{ .branch_cmp = .{
                     .cond = switch (cond_inst.tag) {
                         .cmp_eq => .eq,
+                        .cmp_neq => .neq,
                         .cmp_ult => .ult,
                         .cmp_ugt => .ugt,
                         else => unreachable,

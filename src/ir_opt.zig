@@ -13,7 +13,7 @@ pub fn foldConstants(alloc: std.mem.Allocator, ir: *Ir, block: *Block) !bool {
 
     for (block.insts.items, 0..) |*inst, inst_id| {
         switch (inst.tag) {
-            .add, .sub, .mul, .div, .equal, .less, .more => {
+            .add, .sub, .mul, .div, .eq, .neq, .less, .more => {
                 const bin = inst.data.bin;
                 const left = getImmediate(ir, bin.left) orelse continue;
                 const right = getImmediate(ir, bin.right) orelse continue;
@@ -23,7 +23,8 @@ pub fn foldConstants(alloc: std.mem.Allocator, ir: *Ir, block: *Block) !bool {
                     .sub => left -% right,
                     .mul => left *% right,
                     .div => try std.math.divTrunc(u64, left, right),
-                    .equal => @intFromBool(left == right),
+                    .eq => @intFromBool(left == right),
+                    .neq => @intFromBool(left != right),
                     .less => @intFromBool(left < right),
                     .more => @intFromBool(left > right),
                     else => unreachable,
@@ -610,7 +611,7 @@ pub fn validate(ir: Ir) void {
                 .load, .load_b => {
                     validateRef(ir, block, inst.data.unary, @intCast(inst_id));
                 },
-                .add, .sub, .mul, .div, .equal, .less, .more, .store, .store_b => {
+                .add, .sub, .mul, .div, .eq, .neq, .less, .more, .store, .store_b => {
                     const bin = inst.data.bin;
                     validateRef(ir, block, bin.left, @intCast(inst_id));
                     validateRef(ir, block, bin.right, @intCast(inst_id));

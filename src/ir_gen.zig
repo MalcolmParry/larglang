@@ -403,7 +403,8 @@ pub fn compileExpr(alloc: std.mem.Allocator, ast: Ast, comp_unit: CompUnit, ir: 
         .expr_sub,
         .expr_mul,
         .expr_div,
-        .expr_equal,
+        .expr_eq,
+        .expr_neq,
         .expr_less,
         .expr_more,
         => {
@@ -416,7 +417,8 @@ pub fn compileExpr(alloc: std.mem.Allocator, ast: Ast, comp_unit: CompUnit, ir: 
                 .expr_sub => .sub,
                 .expr_mul => .mul,
                 .expr_div => .div,
-                .expr_equal => .equal,
+                .expr_eq => .eq,
+                .expr_neq => .neq,
                 .expr_less => .less,
                 .expr_more => .more,
                 else => unreachable,
@@ -429,10 +431,10 @@ pub fn compileExpr(alloc: std.mem.Allocator, ast: Ast, comp_unit: CompUnit, ir: 
             const slice = ast.extra_data[d.extra..][0 .. d.int + 1];
 
             const list_start = ir.extra_val_refs.items.len;
-            try ir.extra_val_refs.ensureUnusedCapacity(alloc, slice.len);
-            for (slice) |i| {
-                const ref = try compileExpr(alloc, ast, comp_unit, ir, block, ident_map, i);
-                ir.extra_val_refs.appendAssumeCapacity(ref);
+            const ref_list = try ir.extra_val_refs.addManyAsSlice(alloc, slice.len);
+
+            for (slice, 0..) |node_id2, arg_id| {
+                ref_list[arg_id] = try compileExpr(alloc, ast, comp_unit, ir, block, ident_map, node_id2);
             }
 
             return block.appendInst(alloc, .{

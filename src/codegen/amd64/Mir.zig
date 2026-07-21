@@ -52,6 +52,7 @@ pub const Inst = struct {
         udiv,
 
         cmp_eq,
+        cmp_neq,
         cmp_ult,
         cmp_ugt,
 
@@ -73,7 +74,7 @@ pub const Inst = struct {
             return switch (tag) {
                 .no_op => .none,
                 .load, .load_b => .unary,
-                .add, .sub, .mul, .udiv, .cmp_eq, .cmp_ult, .cmp_ugt, .store, .store_b => .bin,
+                .add, .sub, .mul, .udiv, .cmp_eq, .cmp_neq, .cmp_ult, .cmp_ugt, .store, .store_b => .bin,
                 .call => .val_ref_list,
             };
         }
@@ -153,6 +154,7 @@ pub const Term = union(enum) {
 
 pub const Cond = enum {
     eq,
+    neq,
     ult,
     ugt,
 };
@@ -221,7 +223,7 @@ pub fn print(mir: Mir, term: std.Io.Terminal) !void {
             switch (inst.tag) {
                 .no_op => {},
                 .load, .load_b => try printValRef(term, mir, inst.data.unary),
-                .add, .sub, .mul, .udiv, .cmp_ult, .cmp_eq, .cmp_ugt, .store, .store_b => {
+                .add, .sub, .mul, .udiv, .cmp_ult, .cmp_eq, .cmp_neq, .cmp_ugt, .store, .store_b => {
                     const data = inst.data.bin;
                     try printValRef(term, mir, data.left);
                     try writer.print(", ", .{});
