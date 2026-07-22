@@ -24,8 +24,53 @@ pub fn compileAst(alloc: std.mem.Allocator, ast: Ast) !CompUnit {
     const tl_slice = root_node.data.node_slice;
     const tl_end = tl_slice.first_node + tl_slice.len;
 
-    var tl_i: usize = tl_slice.first_node;
-    while (tl_i < tl_end) : (tl_i += 1) {
+    for (tl_slice.first_node..tl_end) |tl_i| {
+        const node = ast.nodes.get(tl_i);
+
+        switch (node.kind) {
+            .func => {
+                const d = node.data.token_extra;
+                const sym = ast.tokens.items(.loc)[d.token].get(ast.src);
+                const func = try comp_unit.funcs.getOrPut(alloc, sym);
+                if (func.found_existing) return error.CompileFailed;
+            },
+            .global_var => {
+                const d = node.data.token_node;
+                const name = ast.tokens.get(d.token).loc.get(ast.src);
+                const expr = ast.nodes.get(d.node);
+                if (expr.kind != .expr_lit_int) return error.CompileFailed;
+
+                try comp_unit.globals.put(alloc, name, .{ .initial_value = expr.data.int });
+            },
+            .global_asm => {
+                const str = ast.strings[node.data.str];
+                try comp_unit.global_asm.append(alloc, str);
+            },
+            .strdef => {
+                const d = node.data.token_str;
+                const str = ast.strings[d.str];
+                const addr_name = ast.tokens.items(.loc)[node.main_token_id].get(ast.src);
+                const len_name = ast.tokens.items(.loc)[d.token].get(ast.src);
+
+                try comp_unit.global_constants.put(alloc, addr_name, .{ .label = .{
+                    .label = .{
+                        .tag = .data,
+                        .data = @intCast(comp_unit.data.items.len),
+                    },
+                    .offset = 0,
+                } });
+
+                try comp_unit.global_constants.put(alloc, len_name, .{ .int = str.len });
+                try comp_unit.data.append(alloc, str);
+            },
+            .label_decl => {
+                try comp_unit.extern_labels.put(alloc, ast.tokens.items(.loc)[node.data.token].get(ast.src), {});
+            },
+            else => unreachable,
+        }
+    }
+
+    for (tl_slice.first_node..tl_end) |tl_i| {
         const node = ast.nodes.get(tl_i);
 
         switch (node.kind) {
@@ -80,44 +125,14 @@ pub fn compileAst(alloc: std.mem.Allocator, ast: Ast) !CompUnit {
                     try comp_unit.export_symbols.put(alloc, ir.link_sym, {});
                 }
 
-                try comp_unit.funcs.put(alloc, ir.link_sym, .{
+                const func = comp_unit.funcs.getPtr(ir.link_sym) orelse unreachable;
+                func.* = .{
                     .ir = ir,
                     .mir = null,
                     .ramir = null,
-                });
+                };
             },
-            .global_var => {
-                const d = node.data.token_node;
-                const name = ast.tokens.get(d.token).loc.get(ast.src);
-                const expr = ast.nodes.get(d.node);
-                if (expr.kind != .expr_lit_int) return error.CompileFailed;
-
-                try comp_unit.globals.put(alloc, name, .{ .initial_value = expr.data.int });
-            },
-            .global_asm => {
-                const str = ast.strings[node.data.str];
-                try comp_unit.global_asm.append(alloc, str);
-            },
-            .strdef => {
-                const d = node.data.token_str;
-                const str = ast.strings[d.str];
-                const addr_name = ast.tokens.items(.loc)[node.main_token_id].get(ast.src);
-                const len_name = ast.tokens.items(.loc)[d.token].get(ast.src);
-
-                try comp_unit.global_constants.put(alloc, addr_name, .{ .label = .{
-                    .label = .{
-                        .tag = .data,
-                        .data = @intCast(comp_unit.data.items.len),
-                    },
-                    .offset = 0,
-                } });
-
-                try comp_unit.global_constants.put(alloc, len_name, .{ .int = str.len });
-                try comp_unit.data.append(alloc, str);
-            },
-            .label_decl => {
-                try comp_unit.extern_labels.put(alloc, ast.tokens.items(.loc)[node.data.token].get(ast.src), {});
-            },
+            .global_var, .global_asm, .strdef, .label_decl => {},
             else => unreachable,
         }
     }

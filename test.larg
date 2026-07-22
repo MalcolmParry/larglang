@@ -61,12 +61,25 @@
 //     return y;
 // }
 
-label print;
 thing = 5;
 strdef msg, msg_len =
 \\hello world
 \\
 ;
+
+export fn _start() {
+	printNum(fact(5));
+
+	exit(0);
+}
+
+fn fact(n) {
+	if (n == 1) {
+		return 1;
+	}
+
+	return n * fact(n - 1);
+}
 
 fn printNum(n) {
 	rbuffer = stack_alloc 20;
@@ -95,22 +108,8 @@ fn printNum(n) {
 	print(buffer, len);
 }
 
-label fact;
-fn fact(n) {
-	if (n == 1) {
-		return 1;
-	}
-
-	return n * fact(n - 1);
-}
-
+label print;
 label exit;
-export fn _start() {
-	printNum(fact(5));
-
-	exit(0);
-}
-
 asm(
 	\\.section .text
 	\\print:
