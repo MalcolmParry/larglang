@@ -355,7 +355,14 @@ fn printMem(term: std.Io.Terminal, mem: Mem) !void {
             try writer.print(" + ", .{});
         },
         .global => |global_id| {
-            try CompUnit.Immediate.print(.{ .global_addr = global_id }, term);
+            try CompUnit.Immediate.print(.{ .label = .{
+                .label = .{
+                    .tag = .global,
+                    .data = @intCast(global_id),
+                },
+                .offset = 0,
+            } }, term);
+
             term.setColor(.reset) catch {};
             try writer.print(" + ", .{});
         },

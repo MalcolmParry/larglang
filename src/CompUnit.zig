@@ -27,6 +27,23 @@ pub const Func = struct {
     }
 };
 
+pub const Label = packed struct(u32) {
+    data: u30,
+    tag: Tag,
+
+    pub const Tag = enum(u2) {
+        global,
+        data,
+        func,
+        extern_label,
+    };
+};
+
+pub const LabelAndOffset = struct {
+    label: Label,
+    offset: i32,
+};
+
 pub const Global = struct {
     initial_value: u64,
 
@@ -35,10 +52,7 @@ pub const Global = struct {
 
 pub const Immediate = union(enum) {
     int: u64,
-    global_addr: Global.Ref,
-    data_addr: DataAddrRef,
-    func_addr: FuncRef,
-    label_addr: LabelRef,
+    label: LabelAndOffset,
 
     pub fn equal(left: Immediate, right: Immediate) bool {
         return std.meta.eql(left, right);
@@ -46,19 +60,53 @@ pub const Immediate = union(enum) {
 
     pub fn print(imm: Immediate, term: std.Io.Terminal) !void {
         const writer = term.writer;
-        term.setColor(switch (imm) {
-            .int => .blue,
-            .global_addr => .white,
-            .data_addr => .yellow,
-            .func_addr, .label_addr => .red,
-        }) catch {};
 
         switch (imm) {
-            .int => |val| try writer.print("{}", .{val}),
-            .global_addr => |global_ref| try writer.print("g{}", .{global_ref}),
-            .data_addr => |data_addr_ref| try writer.print("d{}", .{data_addr_ref}),
-            .func_addr => |x| try writer.print("f{}", .{x}),
-            .label_addr => |x| try writer.print("l{}", .{x}),
+            .int => |val| {
+                term.setColor(.blue) catch {};
+                try writer.print("{}", .{val});
+            },
+            .label => |lo| {
+                const l = lo.label;
+
+                term.setColor(.reset) catch {};
+                if (lo.offset != 0) {
+                    try writer.print("(", .{});
+                }
+
+                switch (l.tag) {
+                    .global => {
+                        term.setColor(.white) catch {};
+                        try writer.print("g{}", .{l.data});
+                    },
+                    .data => {
+                        term.setColor(.yellow) catch {};
+                        try writer.print("d{}", .{l.data});
+                    },
+                    .func => {
+                        term.setColor(.red) catch {};
+                        try writer.print("f{}", .{l.data});
+                    },
+                    .extern_label => {
+                        term.setColor(.red) catch {};
+                        try writer.print("l{}", .{l.data});
+                    },
+                }
+
+                if (lo.offset != 0) {
+                    term.setColor(.reset) catch {};
+                    if (lo.offset > 0) {
+                        try writer.print(" + ", .{});
+                    } else {
+                        try writer.print(" - ", .{});
+                    }
+
+                    term.setColor(.blue) catch {};
+                    try writer.print("{}", .{@abs(lo.offset)});
+                    term.setColor(.reset) catch {};
+                    try writer.print(")", .{});
+                }
+            },
         }
 
         term.setColor(.reset) catch {};

@@ -104,7 +104,14 @@ pub fn compileAst(alloc: std.mem.Allocator, ast: Ast) !CompUnit {
                 const addr_name = ast.tokens.items(.loc)[node.main_token_id].get(ast.src);
                 const len_name = ast.tokens.items(.loc)[d.token].get(ast.src);
 
-                try comp_unit.global_constants.put(alloc, addr_name, .{ .data_addr = @intCast(comp_unit.data.items.len) });
+                try comp_unit.global_constants.put(alloc, addr_name, .{ .label = .{
+                    .label = .{
+                        .tag = .data,
+                        .data = @intCast(comp_unit.data.items.len),
+                    },
+                    .offset = 0,
+                } });
+
                 try comp_unit.global_constants.put(alloc, len_name, .{ .int = str.len });
                 try comp_unit.data.append(alloc, str);
             },
@@ -166,7 +173,14 @@ fn compileCodeBlock(
                         const name = ast.tokens.items(.loc)[l_expr_node.main_token_id].get(ast.src);
 
                         if (comp_unit.globals.getIndex(name)) |global_ref| {
-                            const global = try ir.appendImm(alloc, .{ .global_addr = @intCast(global_ref) });
+                            const global = try ir.appendImm(alloc, .{ .label = .{
+                                .label = .{
+                                    .tag = .global,
+                                    .data = @intCast(global_ref),
+                                },
+                                .offset = 0,
+                            } });
+
                             _ = try ir.blocks.items[block_id].appendInst(alloc, .bin(.store, global, ref));
                         } else {
                             try new_ident_map.put(alloc, name, ref);
@@ -379,15 +393,33 @@ pub fn compileExpr(alloc: std.mem.Allocator, ast: Ast, comp_unit: CompUnit, ir: 
             const name = ast.tokens.items(.loc)[node.main_token_id].get(ast.src);
 
             if (comp_unit.funcs.getIndex(name)) |x| {
-                return try ir.appendImm(alloc, .{ .func_addr = @intCast(x) });
+                return try ir.appendImm(alloc, .{ .label = .{
+                    .label = .{
+                        .tag = .func,
+                        .data = @intCast(x),
+                    },
+                    .offset = 0,
+                } });
             }
 
             if (comp_unit.extern_labels.getIndex(name)) |x| {
-                return try ir.appendImm(alloc, .{ .label_addr = @intCast(x) });
+                return try ir.appendImm(alloc, .{ .label = .{
+                    .label = .{
+                        .tag = .extern_label,
+                        .data = @intCast(x),
+                    },
+                    .offset = 0,
+                } });
             }
 
             if (comp_unit.globals.getIndex(name)) |global_ref| {
-                return try block.appendInst(alloc, .unary(.load, try ir.appendImm(alloc, .{ .global_addr = @intCast(global_ref) })));
+                return try block.appendInst(alloc, .unary(.load, try ir.appendImm(alloc, .{ .label = .{
+                    .label = .{
+                        .tag = .global,
+                        .data = @intCast(global_ref),
+                    },
+                    .offset = 0,
+                } })));
             }
 
             if (comp_unit.global_constants.get(name)) |val| {
