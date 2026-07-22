@@ -1,0 +1,40 @@
+label InitWindow;
+label CloseWindow;
+label SetTargetFPS;
+label WindowShouldClose;
+label BeginDrawing;
+label EndDrawing;
+label ClearBackground;
+
+export fn main() {
+	name = stack_alloc 1;
+	^name = 0;
+
+	InitWindow(800, 450, name);
+	SetTargetFPS(60);
+
+	while (WindowShouldClose() == 0) {
+		BeginDrawing();
+		
+		ClearBackground(255);
+
+		EndDrawing();
+	}
+
+	CloseWindow();
+
+	return 0;
+}
+
+label print;
+label exit;
+asm(
+	\\.section .text
+	\\print:
+	\\	mov rdx, rsi
+	\\	mov rsi, rdi
+	\\	mov rax, 1
+	\\	mov rdi, 2
+	\\	syscall
+	\\	ret
+);

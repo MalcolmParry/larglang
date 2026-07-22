@@ -1,4 +1,5 @@
 const std = @import("std");
+const Build = std.Build;
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
@@ -23,18 +24,24 @@ pub fn build(b: *std.Build) void {
 
     const comp_test_step = b.step("comp-test", "");
     const comp_test_asm_emit = b.addRunArtifact(exe);
-    comp_test_asm_emit.addFileInput(b.path("test.larg"));
-    comp_test_asm_emit.addArgs(&.{ "test.larg", "-o" });
+    comp_test_asm_emit.addFileInput(b.path("tests/raylib.larg"));
+    comp_test_asm_emit.addArgs(&.{ "tests/raylib.larg", "-o" });
     const asm_file = comp_test_asm_emit.addOutputFileArg("test.s");
 
     const comp_test = b.addExecutable(.{
         .name = "test",
-        .root_module = b.addModule("test", .{
+        .root_module = b.createModule(.{
             .target = target,
             .optimize = .ReleaseFast,
-            .pic = false,
+            .pic = true,
+            .link_libc = true,
         }),
     });
+
+    comp_test.root_module.linkSystemLibrary("raylib", .{ .preferred_link_mode = .static });
+    comp_test.root_module.linkSystemLibrary("GL", .{ .preferred_link_mode = .static });
+    comp_test.root_module.linkSystemLibrary("X11", .{ .preferred_link_mode = .static });
+
     comp_test.step.dependOn(&comp_test_asm_emit.step);
     comp_test.root_module.addAssemblyFile(asm_file);
 
