@@ -5,7 +5,7 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const exe = b.addExecutable(.{
+    const largc = b.addExecutable(.{
         .name = "largc",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
@@ -14,38 +14,68 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
-    b.installArtifact(exe);
+    b.installArtifact(largc);
 
     const run_step = b.step("run", "Run the app");
-    const run_cmd = b.addRunArtifact(exe);
+    const run_cmd = b.addRunArtifact(largc);
     run_cmd.addArgs(b.args orelse &.{});
     run_step.dependOn(&run_cmd.step);
     run_cmd.step.dependOn(b.getInstallStep());
 
-    const comp_test_step = b.step("comp-test", "");
-    const comp_test_asm_emit = b.addRunArtifact(exe);
-    comp_test_asm_emit.addFileInput(b.path("tests/raylib.larg"));
-    comp_test_asm_emit.addArgs(&.{ "tests/raylib.larg", "-o" });
-    const asm_file = comp_test_asm_emit.addOutputFileArg("test.s");
+    const build_examples_step = b.step("examples", "build the examples");
+    for (programs) |prog| {
+        compileProgram(b, prog, build_examples_step, largc, target);
+    }
+}
 
-    const comp_test = b.addExecutable(.{
-        .name = "test",
+fn compileProgram(b: *Build, program: Program, step: *Build.Step, largc: *Build.Step.Compile, target: Build.ResolvedTarget) void {
+    const asm_emit = b.addRunArtifact(largc);
+    asm_emit.addFileInput(b.path(program.src_file));
+    asm_emit.addArgs(&.{ program.src_file, "-o" });
+    const asm_file = asm_emit.addOutputFileArg(b.fmt("{s}.s", .{program.name}));
+
+    const exe = b.addExecutable(.{
+        .name = program.name,
         .root_module = b.createModule(.{
             .target = target,
             .optimize = .ReleaseFast,
             .pic = true,
-            .link_libc = true,
+            .link_libc = program.libc,
         }),
     });
 
-    comp_test.root_module.linkSystemLibrary("raylib", .{ .preferred_link_mode = .static });
-    comp_test.root_module.linkSystemLibrary("GL", .{ .preferred_link_mode = .static });
-    comp_test.root_module.linkSystemLibrary("X11", .{ .preferred_link_mode = .static });
+    for (program.system_libs) |sys_lib| {
+        exe.root_module.linkSystemLibrary(sys_lib, .{ .preferred_link_mode = .static });
+    }
 
-    comp_test.step.dependOn(&comp_test_asm_emit.step);
-    comp_test.root_module.addAssemblyFile(asm_file);
+    exe.step.dependOn(&asm_emit.step);
+    exe.root_module.addAssemblyFile(asm_file);
 
-    const comp_test_install = b.addInstallArtifact(comp_test, .{});
-    comp_test_install.step.dependOn(&comp_test.step);
-    comp_test_step.dependOn(&comp_test_install.step);
+    const install = b.addInstallArtifact(exe, .{});
+    install.step.dependOn(&exe.step);
+    step.dependOn(&install.step);
 }
+
+const programs = [_]Program{
+    .{
+        .name = "test",
+        .src_file = "tests/test.larg",
+    },
+    .{
+        .name = "raylib",
+        .src_file = "tests/raylib.larg",
+        .libc = true,
+        .system_libs = &.{
+            "raylib",
+            "GL",
+            "X11",
+        },
+    },
+};
+
+const Program = struct {
+    name: []const u8,
+    src_file: []const u8,
+    libc: bool = false,
+    system_libs: []const []const u8 = &.{},
+};
