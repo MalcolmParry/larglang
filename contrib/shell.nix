@@ -19,5 +19,7 @@ pkgs.mkShell {
     pkgs.libxi
     pkgs.libxinerama
     pkgs.libxrandr
+
+    pkgs.graphviz
   ];
 }

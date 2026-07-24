@@ -4,6 +4,7 @@ const Ast = @import("Ast.zig");
 const Ir = @import("Ir.zig");
 const Mir = @import("codegen/amd64/Mir.zig");
 const reg_alloc = @import("codegen/amd64/RegAlloc.zig");
+const ramir_gen = @import("codegen/amd64/ramir_gen.zig");
 const ramir_merge = @import("codegen/amd64/ramir_merge.zig");
 const emit_asm = @import("codegen/amd64/emit_asm.zig");
 
@@ -16,6 +17,7 @@ pub fn main(init: std.process.Init) !void {
 
     var maybe_src_file_name: ?[]const u8 = null;
     var maybe_out_file_name: ?[]const u8 = null;
+    var maybe_debug_func: ?[]const u8 = null;
     var flags: CompInfo.Flags = .{};
 
     _ = arg_iter.skip();
@@ -39,12 +41,29 @@ pub fn main(init: std.process.Init) !void {
 
                     maybe_out_file_name = output_file;
                 },
+                hash(0, "-debug-func") => {
+                    if (maybe_debug_func) |_| {
+                        std.log.err("cannot specify 2 debug function symbols", .{});
+                        std.process.exit(1);
+                    }
+
+                    const symbol_name = arg_iter.next() orelse {
+                        std.log.err("-debug-func option expects symbol name", .{});
+                        std.process.exit(1);
+                    };
+
+                    maybe_debug_func = symbol_name;
+                },
                 hash(0, "-dump-tokens") => flags.dump_tokens = true,
                 hash(0, "-dump-ast") => flags.dump_ast = true,
                 hash(0, "-dump-ir") => flags.dump_ir = true,
                 hash(0, "-dump-mir") => flags.dump_mir = true,
                 hash(0, "-dump-ramir") => flags.dump_ramir = true,
                 hash(0, "-no-emit") => flags.no_emit = true,
+                hash(0, "-emit-rig-dot") => {
+                    flags.no_emit = true;
+                    flags.emit_rig_dot = true;
+                },
                 else => {
                     std.log.err("invalid option '{s}'", .{arg});
                     std.process.exit(1);
@@ -99,6 +118,7 @@ pub fn main(init: std.process.Init) !void {
         .output = &stdout_writer.interface,
         .debug = stderr_term,
         .flags = flags,
+        .maybe_debug_func = maybe_debug_func,
     });
 
     try stderr_writer.flush();
@@ -111,6 +131,7 @@ const CompInfo = struct {
     output: *std.Io.Writer,
     debug: std.Io.Terminal,
     flags: Flags,
+    maybe_debug_func: ?[]const u8,
 
     const Flags = packed struct {
         dump_tokens: bool = false,
@@ -119,6 +140,7 @@ const CompInfo = struct {
         dump_mir: bool = false,
         dump_ramir: bool = false,
         no_emit: bool = false,
+        emit_rig_dot: bool = false,
     };
 };
 
@@ -155,8 +177,12 @@ fn compile(info: CompInfo) !void {
 
     for (comp_unit.funcs.values()) |*func| {
         const ir = &func.ir;
+        const debug_info = if (info.maybe_debug_func) |debug_func|
+            std.mem.eql(u8, debug_func, ir.link_sym)
+        else
+            true;
 
-        if (info.flags.dump_ir) {
+        if (debug_info and info.flags.dump_ir) {
             try printHeading(debug, "IR");
             try ir.print(debug);
             try debug.writer.flush();
@@ -165,7 +191,7 @@ fn compile(info: CompInfo) !void {
         try Ir.opt.optimize(alloc, ir);
         try Ir.opt.clean(alloc, ir);
 
-        if (info.flags.dump_ir) {
+        if (debug_info and info.flags.dump_ir) {
             try printHeading(debug, "IR Immediates");
             try debug.writer.print("{any}\n", .{ir.imms.items});
 
@@ -180,7 +206,7 @@ fn compile(info: CompInfo) !void {
             var mir = try Mir.gen.gen(alloc, ir.*);
             errdefer mir.deinit(alloc);
 
-            if (info.flags.dump_mir) {
+            if (debug_info and info.flags.dump_mir) {
                 try printHeading(debug, "Machine IR");
                 try mir.print(debug);
                 try debug.writer.flush();
@@ -189,7 +215,7 @@ fn compile(info: CompInfo) !void {
             try Mir.opt.optimize(alloc, &mir);
             try Mir.opt.clean(alloc, &mir);
 
-            if (info.flags.dump_mir) {
+            if (debug_info and info.flags.dump_mir) {
                 try printHeading(debug, "Optimized Machine IR");
                 try mir.print(debug);
                 try debug.writer.flush();
@@ -199,10 +225,18 @@ fn compile(info: CompInfo) !void {
         }
 
         {
+            var rig = try ramir_gen.buildRig(alloc, func.mir.?);
+            defer rig.deinit(alloc);
+
+            if (debug_info and info.flags.emit_rig_dot)
+                try ramir_gen.dumpDot(rig, func.mir.?.link_sym, info.output);
+        }
+
+        {
             var ramir = try reg_alloc.emitRamir(alloc, func.mir.?);
             errdefer ramir.deinit(alloc);
 
-            if (info.flags.dump_ramir) {
+            if (debug_info and info.flags.dump_ramir) {
                 try printHeading(debug, "Register Allocated Machine IR");
                 try ramir.print(debug);
                 try debug.writer.flush();
@@ -210,7 +244,7 @@ fn compile(info: CompInfo) !void {
 
             try ramir_merge.merge(alloc, &ramir);
 
-            if (info.flags.dump_ramir) {
+            if (debug_info and info.flags.dump_ramir) {
                 try printHeading(debug, "Merged Register Allocated Machine IR");
                 try ramir.print(debug);
                 try debug.writer.flush();

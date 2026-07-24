@@ -157,6 +157,8 @@ pub const Reg = enum(u8) {
     r8b, r9b, r10b, r11b, r12b, r13b, r14b, r15b,
     // zig fmt: on
 
+    pub const Set = std.bit_set.StaticBitSet(count);
+    pub const count = std.meta.fields(Reg).len;
     pub const TagInt = @typeInfo(Reg).@"enum".tag_type;
     pub const Class = enum(u4) {
         gp,
